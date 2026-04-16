@@ -180,6 +180,54 @@ def find_noop_candidates(question: str, solution: str) -> list[dict]:
     return candidates
 
 
+def extract_persons(text: str) -> list[str]:
+    """
+    Extract person names from question text using capitalization rules.
+    More reliable than spaCy for GSM8K — spaCy often misclassifies names
+    like 'Natalia' as GPE or 'Betty' as ORG in math problem context.
+
+    Logic: collect all capitalized words not in a known non-name list.
+    This includes sentence-start words since names like 'Weng' or 'James'
+    may only appear once at the start of a sentence.
+    """
+    NON_NAMES = {
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+        "I", "A", "An", "The", "He", "She", "They", "We", "It", "His", "Her",
+        "Yesterday", "Today", "Tomorrow", "Now", "Then", "How", "What",
+        "Each", "Every", "All", "Some", "This", "That", "There", "If",
+        "After", "Before", "When", "While", "Since", "By", "At", "In",
+        "On", "For", "To", "Of", "With", "From", "About",
+        "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+        "And", "But", "So", "Next", "Finally", "Also", "Over", "Under",
+        "Last", "First", "Second", "Third", "Fourth", "Fifth",
+        "New", "Old", "Big", "Small", "Large", "Long", "Short", "High", "Low",
+        "Mr", "Mrs", "Ms", "Dr", "Sir",
+        "DVD", "TV", "PC", "PE", "ATM",
+        "No", "Yes", "Not", "Just", "Only", "Even", "Still", "Already",
+        "During", "Between", "Around", "Across", "Along", "Upon",
+        "Ships", "Grade", "However", "Although", "Because", "Therefore",
+        "Another", "Other", "Same", "Different", "Total", "Average",
+        "Striploin", "Ribeye", "Sirloin",
+    }
+    sentences = split_sentences(text)
+    persons = set()
+    for sent in sentences:
+        words = sent.split()
+        for word in words:
+            clean = re.sub(r"[^a-zA-Z]", "", word)
+            if not clean or not clean[0].isupper():
+                continue
+            if len(clean) <= 2:
+                continue  # skip single letters and two-letter words
+            if clean.isupper():
+                continue  # skip all-caps abbreviations like FICA, NY, LLC
+            if clean not in NON_NAMES:
+                persons.add(clean)
+    return list(persons)
+
+
 def build_distractor_hints(question: str, solution: str, entities: list[dict],
                            numbers: list[dict], units: list[dict]) -> dict:
     """
@@ -189,7 +237,7 @@ def build_distractor_hints(question: str, solution: str, entities: list[dict],
     in_topic   → needs: numbers + units in the problem → swap values, keep theme
     no_op      → needs: candidate sentences with unused numbers → insert as-is or paraphrase
     """
-    persons = [e["text"] for e in entities if e["label"] == "PERSON"]
+    persons = extract_persons(question)
     topics  = detect_topics(question)
 
     return {
@@ -256,27 +304,100 @@ def extract_gsm8k(split: str = "train", output_path: str = "gsm8k_extracted.json
 def print_sample(records: list[dict], n: int = 2) -> None:
     for rec in records[:n]:
         print("=" * 60)
-        print(f"ID       : {rec['id']}")
-        print(f"Question : {rec['question'][:120]}...")
-        print(f"Answer   : {rec['gold_answer']}")
-        print(f"Numbers  : {rec['numbers'][:5]}")
-        print(f"Units    : {rec['units'][:3]}")
-        print(f"Entities : {rec['entities'][:5]}")
-        print(f"Sentences: {len(rec['sentences'])} total")
-        for s in rec['sentences'][:3]:
+        print(f"ID           : {rec['id']}")
+        print(f"Question     : {rec['question'][:120]}...")
+        print(f"Gold answer  : {rec['gold_answer']}")
+        print()
+        print(f"Numbers ({len(rec['numbers'])}):")
+        for num in rec['numbers'][:5]:
+            print(f"  {num['raw']} = {num['value']} (pos {num['start']}-{num['end']})")
+        print(f"Units ({len(rec['units'])}):")
+        for u in rec['units'][:3]:
+            print(f"  {u['number']} {u['unit']}")
+        print(f"Entities ({len(rec['entities'])}):")
+        for e in rec['entities'][:5]:
+            print(f"  {e['text']} [{e['label']}]")
+        print()
+        print(f"Sentences ({len(rec['sentences'])}):")
+        for s in rec['sentences']:
             print(f"  [{s['role']:8}] {s['text'][:80]}")
+        print()
         hints = rec["distractor_hints"]
         print(f"Distractor hints:")
-        print(f"  off_topic  → topics={hints['off_topic']['topics']}, "
-              f"persons={hints['off_topic']['persons']}")
-        print(f"  in_topic   → numbers={hints['in_topic']['numbers'][:5]}, "
-              f"units={hints['in_topic']['units'][:3]}")
+        print(f"  off_topic  → topics={hints['off_topic']['topics']}")
+        print(f"             → persons={hints['off_topic']['persons']}")
+        print(f"  in_topic   → numbers={hints['in_topic']['numbers'][:5]}")
+        print(f"             → units={hints['in_topic']['units'][:3]}")
+        print(f"             → persons={hints['in_topic']['persons']}")
         noop = hints['no_op']['candidates']
         print(f"  no_op      → {len(noop)} candidate sentence(s)")
         for c in noop[:2]:
             print(f"    '{c['text'][:70]}' | nums={c['numbers_in_sentence']}")
 
 
+def validate(records: list[dict]) -> None:
+    """
+    Validate all records and report any data quality issues.
+    Checks: gold_answer, numbers, units, entities, sentences, distractor_hints.
+    """
+    issues = []
+
+    for rec in records:
+        id = rec["id"]
+
+        # gold_answer must not be None
+        if rec["gold_answer"] is None:
+            issues.append(f"ID {id}: gold_answer is None")
+
+        # numbers must have valid value and position
+        for n in rec["numbers"]:
+            if n["value"] is None:
+                issues.append(f"ID {id}: number has None value: {n}")
+            if n["start"] >= n["end"]:
+                issues.append(f"ID {id}: number has invalid position: {n}")
+
+        # units must have non-empty number and unit
+        for u in rec["units"]:
+            if not u["number"] or not u["unit"]:
+                issues.append(f"ID {id}: unit has empty field: {u}")
+
+        # entities must have text and label
+        for e in rec["entities"]:
+            if not e["text"] or not e["label"]:
+                issues.append(f"ID {id}: entity has empty field: {e}")
+
+        # sentences must have text and valid role
+        for s in rec["sentences"]:
+            if not s["text"]:
+                issues.append(f"ID {id}: sentence has empty text")
+            if s["role"] not in ("question", "solution"):
+                issues.append(f"ID {id}: sentence has invalid role: {s['role']}")
+
+        # distractor_hints must have all three blocks
+        hints = rec["distractor_hints"]
+        for block in ("off_topic", "in_topic", "no_op"):
+            if block not in hints:
+                issues.append(f"ID {id}: distractor_hints missing block: {block}")
+
+        # no_op candidates must have text and numbers
+        for c in hints.get("no_op", {}).get("candidates", []):
+            if not c["text"]:
+                issues.append(f"ID {id}: no_op candidate has empty text")
+            if not c["numbers_in_sentence"]:
+                issues.append(f"ID {id}: no_op candidate has no numbers")
+
+    print(f"Validated {len(records)} records.")
+    if issues:
+        print(f"Found {len(issues)} issue(s):")
+        for issue in issues[:20]:
+            print(f"  {issue}")
+        if len(issues) > 20:
+            print(f"  ... and {len(issues) - 20} more.")
+    else:
+        print("All checks passed!")
+
+
 if __name__ == "__main__":
     records = extract_gsm8k(split="train", output_path="gsm8k_extracted.json")
     print_sample(records)
+    validate(records)
