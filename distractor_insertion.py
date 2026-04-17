@@ -47,38 +47,44 @@ def insert_distractor(question: str, distractor: str) -> str:
 
 # ── training format ───────────────────────────────────────────────────────────
 
-def to_training_example(question: str, solution: str, gold_answer: float) -> dict:
+def to_training_example(question: str, solution: str, gold_answer: float,
+                        source_idx: int = 0) -> dict:
     """
-    Convert to chat-formatted training example matching the paper's SFT format.
-    System prompt from Section 3.2: "focus only on information relevant to
-    solving the problem and ignore any irrelevant details."
+    Convert to chat-formatted training example matching the teammate's JSONL format.
+    System prompt combines the math tutor role with the paper's distractor instruction.
     """
+    # Format gold_answer as integer string if it is a whole number
+    gold_str = str(int(gold_answer)) if gold_answer == int(gold_answer) else str(gold_answer)
+
     return {
         "messages": [
             {
                 "role": "system",
-                "content": "Focus only on information relevant to solving the problem and ignore any irrelevant details."
+                "content": "You are a helpful math tutor. Solve math problems step by step. Focus only on information relevant to solving the problem and ignore any irrelevant details."
             },
             {
                 "role": "user",
-                "content": question
+                "content": f"Solve this math problem:\n\n{question}"
             },
             {
                 "role": "assistant",
                 "content": solution
             }
         ],
-        "gold_answer": gold_answer,
+        "_gold_answer": gold_str,
+        "_source_idx": source_idx,
+        "_attempt": 1,
     }
 
 
 # ── main insertion loop ───────────────────────────────────────────────────────
 
 def build_training_sets(
-    input_path: str = "gsm8k_distractors.json",
-    clean_path: str = "train_clean.json",
-    mixed_path: str = "train_mixed.json",
-    hard_path:  str = "train_hard.json",
+    input_path:    str = "gsm8k_distractors.json",
+    distilled_path: str = "gsm8k_train_distilled.jsonl",
+    clean_path:    str = "train_clean.jsonl",
+    mixed_path:    str = "train_mixed.jsonl",
+    hard_path:     str = "train_hard.jsonl",
 ) -> None:
 
     print(f"Loading {input_path}...")
@@ -86,18 +92,35 @@ def build_training_sets(
         data = json.load(f)
     print(f"  {len(data)} records loaded.")
 
+    # Load teammate's distilled solutions (keyed by _source_idx)
+    print(f"Loading {distilled_path}...")
+    distilled_map = {}
+    with open(distilled_path) as f:
+        for line in f:
+            rec_d = json.loads(line.strip())
+            idx = rec_d.get("_source_idx")
+            if idx is not None and idx not in distilled_map:
+                # Extract assistant content as solution
+                msgs = rec_d.get("messages", [])
+                assistant = next((m["content"] for m in msgs if m["role"] == "assistant"), None)
+                if assistant:
+                    distilled_map[idx] = assistant
+    print(f"  {len(distilled_map)} distilled solutions loaded.")
+
     train_clean = []
     train_mixed = []
     train_hard  = []
 
     for i, rec in enumerate(data):
         question     = rec["question"]
-        solution     = rec["solution"]
         gold_answer  = rec["gold_answer"]
         distractors  = rec["distractors"]
 
+        # Use distilled solution if available, else fall back to original
+        solution = distilled_map.get(rec["id"], rec["solution"])
+
         # Clean example (no distractor)
-        clean_ex = to_training_example(question, solution, gold_answer)
+        clean_ex = to_training_example(question, solution, gold_answer, rec["id"])
         train_clean.append(clean_ex)
         train_mixed.append(clean_ex)
         train_hard.append(clean_ex)
@@ -105,17 +128,17 @@ def build_training_sets(
         # off_topic variant
         if distractors.get("off_topic"):
             q = insert_distractor(question, distractors["off_topic"])
-            train_mixed.append(to_training_example(q, solution, gold_answer))
+            train_mixed.append(to_training_example(q, solution, gold_answer, rec["id"]))
 
         # in_topic variant
         if distractors.get("in_topic"):
             q = insert_distractor(question, distractors["in_topic"])
-            train_mixed.append(to_training_example(q, solution, gold_answer))
+            train_mixed.append(to_training_example(q, solution, gold_answer, rec["id"]))
 
         # no_op variant
         if distractors.get("no_op"):
             q = insert_distractor(question, distractors["no_op"])
-            ex = to_training_example(q, solution, gold_answer)
+            ex = to_training_example(q, solution, gold_answer, rec["id"])
             train_mixed.append(ex)
             train_hard.append(ex)
 
@@ -129,12 +152,13 @@ def build_training_sets(
         (hard_path,  train_hard),
     ]:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(dataset, f, ensure_ascii=False, indent=2)
+            for record in dataset:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     print(f"\nDone!")
-    print(f"  train_clean.json : {len(train_clean)} examples")
-    print(f"  train_mixed.json : {len(train_mixed)} examples")
-    print(f"  train_hard.json  : {len(train_hard)} examples")
+    print(f"  train_clean.jsonl : {len(train_clean)} examples")
+    print(f"  train_mixed.jsonl : {len(train_mixed)} examples")
+    print(f"  train_hard.jsonl  : {len(train_hard)} examples")
 
     return train_clean, train_mixed, train_hard
 
@@ -144,7 +168,7 @@ def build_training_sets(
 def verify_training_sets(
     clean_path: str = "train_clean.json",
     mixed_path: str = "train_mixed.json",
-    hard_path:  str = "train_hard.json",
+    hard_path:  str = "train_hard.jsonl",
 ) -> None:
     """
     Verify the three training set JSON files.
@@ -159,7 +183,7 @@ def verify_training_sets(
     for path, (exp_min, exp_max) in EXPECTED.items():
         try:
             with open(path) as f:
-                data = json.load(f)
+                data = [json.loads(line) for line in f if line.strip()]
         except FileNotFoundError:
             print(f"[MISSING] {path}")
             continue
@@ -169,8 +193,8 @@ def verify_training_sets(
             if "messages" not in rec:
                 issues.append(f"Record {i}: missing messages")
                 continue
-            if "gold_answer" not in rec:
-                issues.append(f"Record {i}: missing gold_answer")
+            if "_gold_answer" not in rec:
+                issues.append(f"Record {i}: missing _gold_answer")
             msgs = rec["messages"]
             if len(msgs) != 3:
                 issues.append(f"Record {i}: expected 3 messages, got {len(msgs)}")
@@ -192,6 +216,9 @@ def verify_training_sets(
 
 
 if __name__ == "__main__":
-    build_training_sets()
+    build_training_sets(
+        input_path="gsm8k_distractors.json",
+        distilled_path="gsm8k_train_distilled.jsonl",
+    )
     print()
     verify_training_sets()
