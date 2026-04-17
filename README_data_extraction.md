@@ -7,9 +7,15 @@ This script loads the GSM8K training split and extracts structured information f
 ## How to Run
 
 ```bash
-pip install datasets spacy
-python -m spacy download en_core_web_sm
+pip install datasets
 python data_extraction.py
+```
+
+spaCy is optional — if installed, it improves sentence splitting and provides richer entity labels. Person name extraction does not rely on spaCy.
+
+```bash
+pip install spacy
+python -m spacy download en_core_web_sm
 ```
 
 Output: `gsm8k_extracted.json` (one dict per problem, 7473 total)
@@ -45,12 +51,19 @@ Output: [{"number": "2", "unit": "dollars"}, {"number": "3", "unit": "hours"}]
 ```
 
 **`extract_entities(text)`**
-Uses spaCy to find named entities such as person names and locations.
+Uses spaCy to find named entities such as person names and locations. Note: spaCy sometimes misclassifies names in math problem context (e.g. "Natalia" as GPE). Person names for distractor generation are extracted separately by `extract_persons()`.
 ```
 Input:  "Natalia sold clips in Paris"
-Output: [{"text": "Natalia", "label": "PERSON"}, {"text": "Paris", "label": "GPE"}]
+Output: [{"text": "Natalia", "label": "GPE"}, {"text": "Paris", "label": "GPE"}]
 ```
 > Note: if spaCy is not installed, this returns an empty list.
+
+**`extract_persons(text)`**
+Extracts person names using capitalization rules — more reliable than spaCy for GSM8K math problems. Collects all capitalized words that are not in a known non-name list (months, days, pronouns, connectors, abbreviations, etc.). Also filters out words of length ≤ 2 and all-caps abbreviations.
+```
+Input:  "Natalia sold clips to 48 friends. She sold half in May."
+Output: ["Natalia"]
+```
 
 **`split_sentences(text)`**
 Splits a paragraph into individual sentences.
@@ -146,6 +159,23 @@ All 7473 problems are saved to `gsm8k_extracted.json`. Each record looks like th
   }
 }
 ```
+
+---
+
+### Step 4 — Validate
+
+```python
+validate(records)
+```
+After extraction, `validate()` checks all 7473 records for data quality issues:
+- `gold_answer` is not None
+- `numbers` have valid values and positions
+- `units` have non-empty fields
+- `entities` have non-empty text and label
+- `sentences` have valid text and role (`question` or `solution`)
+- `distractor_hints` has all three blocks (`off_topic`, `in_topic`, `no_op`)
+- `no_op` candidates have text and numbers
+- `persons` contain no suspicious entries (length ≤ 2 or all-caps)
 
 ---
 
