@@ -88,14 +88,14 @@ def build_training_sets(
 ) -> None:
 
     print(f"Loading {input_path}...")
-    with open(input_path) as f:
+    with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
     print(f"  {len(data)} records loaded.")
 
     # Load teammate's distilled solutions (keyed by _source_idx)
     print(f"Loading {distilled_path}...")
     distilled_map = {}
-    with open(distilled_path) as f:
+    with open(distilled_path, encoding="utf-8") as f:
         for line in f:
             rec_d = json.loads(line.strip())
             idx = rec_d.get("_source_idx")
@@ -166,8 +166,8 @@ def build_training_sets(
 # ── verify ────────────────────────────────────────────────────────────────────
 
 def verify_training_sets(
-    clean_path: str = "train_clean.json",
-    mixed_path: str = "train_mixed.json",
+    clean_path: str = "train_clean.jsonl",
+    mixed_path: str = "train_mixed.jsonl",
     hard_path:  str = "train_hard.jsonl",
 ) -> None:
     """
@@ -182,7 +182,7 @@ def verify_training_sets(
 
     for path, (exp_min, exp_max) in EXPECTED.items():
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = [json.loads(line) for line in f if line.strip()]
         except FileNotFoundError:
             print(f"[MISSING] {path}")
@@ -218,7 +218,7 @@ def verify_training_sets(
 if __name__ == "__main__":
     build_training_sets(
         input_path="gsm8k_distractors.json",
-        distilled_path="gsm8k_train_distilled.jsonl",
+        distilled_path="data/gsm8k_train_distilled.jsonl",
     )
     print()
     verify_training_sets()
