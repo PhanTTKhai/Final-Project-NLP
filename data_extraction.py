@@ -398,6 +398,18 @@ def validate(records: list[dict]) -> None:
 
 
 if __name__ == "__main__":
-    records = extract_gsm8k(split="train", output_path="gsm8k_extracted.json")
-    print_sample(records)
-    validate(records)
+    print("\n=== Extracting TRAIN split ===")
+    train_records = extract_gsm8k(
+        split="train",
+        output_path="gsm8k_train_extracted.json",
+    )
+    print_sample(train_records)
+    validate(train_records)
+
+    print("\n=== Extracting TEST split ===")
+    test_records = extract_gsm8k(
+        split="test",
+        output_path="gsm8k_test_extracted.json",
+    )
+    print_sample(test_records)
+    validate(test_records)

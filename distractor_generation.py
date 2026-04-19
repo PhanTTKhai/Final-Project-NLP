@@ -1,444 +1,840 @@
 """
-Task #10 - NLP for Distractor Generation
+Task #10 - NLP for Distractor Generation (v4)
 
 Reads gsm8k_extracted.json (output of Task #9) and generates three types
 of distractor sentences for each problem:
   - off_topic:  a sentence unrelated to the problem topic
   - in_topic:   a sentence related to the topic but with a fake number
-  - no_op:      a sentence that looks computationally relevant but isn't,
-                using time/context markers to signal the number is not needed
+  - no_op:      a sentence that looks computationally relevant but isn't
 
 Output: gsm8k_distractors.json
-Each record contains the original question and three distractor sentences.
-Does NOT insert distractors into questions — that is done by Task #4 (distractor_insertion.py).
+
+v4 changes (unit-semantic pass):
+  - Units are classified into 5 CATEGORIES: count, money, time, distance, weight
+  - Templates are GATED by unit category - e.g., "coupon" only applies to
+    money/count units, not to miles or minutes
+  - Each category has its own pool of natural verbs and contexts:
+      count:    bought, kept, counted, had on hand
+      money:    coupon, discount, refund, spent
+      time:     scheduled, spent, took, lasted
+      distance: traveled, walked, drove, covered
+      weight:   bought, measured, weighed, ordered
+  - Removed the pan-generic templates ("received as a gift", "mentioned
+    having") because they don't work across all unit types
+  - Hard reject filter extended with unit-context mismatches as backup
 """
+from __future__ import annotations
 
 import json
 import random
+import re
 
-random.seed(42)
+SEED = 42
+random.seed(SEED)
 
-# ── off_topic templates ───────────────────────────────────────────────────────
 
-OFF_TOPIC_POOLS = {
-    "money": [
-        "The weather was sunny and warm that day.",
-        "It was a quiet morning outside.",
-        "The sky was clear and blue.",
-        "Birds were singing in the trees.",
+# =============================================================================
+# OFF-TOPIC (unchanged — good per feedback)
+# =============================================================================
+
+OFF_TOPIC_BY_DOMAIN = {
+    "weather": [
+        "The sky was overcast with a light breeze that afternoon.",
+        "A gentle rain fell throughout the morning hours.",
+        "The weather turned unexpectedly warm over the weekend.",
+        "Fog rolled in from the coast by early evening.",
+        "Sunshine broke through the clouds just after lunch.",
     ],
-    "time": [
-        "She enjoyed painting on weekends.",
-        "He had a pet dog named Max.",
-        "The garden was full of flowers.",
-        "They went for a walk in the park.",
+    "hobby": [
+        "She had recently taken up watercolor painting as a weekend hobby.",
+        "He enjoyed learning new chess openings in his free time.",
+        "Their book club met every other Thursday at the local cafe.",
+        "She had been collecting vintage postcards since childhood.",
+        "He practiced the guitar for an hour each evening.",
     ],
-    "food": [
-        "The bus arrived late that morning.",
-        "It was a busy day at the office.",
-        "She liked reading books in the evening.",
-        "He played soccer with his friends.",
-        "The post office was closed on Sunday.",
-        "She went for a morning jog.",
+    "travel": [
+        "The trip to the coast last summer had been especially memorable.",
+        "They were planning a weekend hike in the nearby mountains.",
+        "A cousin was visiting from out of state for the holidays.",
+        "The train station had been renovated the previous spring.",
+        "Their vacation photos were still sitting on the kitchen table.",
     ],
-    "school": [
-        "The market was crowded on weekends.",
-        "She bought a new pair of shoes.",
-        "He enjoyed cycling in the park.",
-        "The river flowed gently through the valley.",
-        "She painted a picture in her free time.",
-        "He went for a jog in the morning.",
+    "household": [
+        "The cat had fallen asleep on the sunlit windowsill.",
+        "A new rug had arrived for the living room last week.",
+        "The old clock in the hallway needed a fresh battery.",
+        "The garden hose had sprung a small leak near the spigot.",
+        "A stack of library books sat waiting by the front door.",
     ],
-    "shopping": [
-        "The children played outside all day.",
-        "It was a quiet evening at home.",
-        "She watered the plants every morning.",
-        "He fixed his bicycle in the garage.",
+    "community": [
+        "The local park was hosting a music festival on Saturday.",
+        "A new bakery had opened on the corner of Main Street.",
+        "The neighborhood watch meeting was rescheduled to Tuesday.",
+        "The community garden was looking for new volunteers.",
+        "A charity run was scheduled for the following weekend.",
     ],
-    "work": [
-        "The lake was calm and peaceful.",
-        "She visited her grandmother on Sunday.",
-        "He cooked dinner for the family.",
-        "The flowers bloomed in the spring.",
-        "She took a long walk in the afternoon.",
-        "He enjoyed reading mystery novels.",
-        "They played chess in the evening.",
-        "She knitted a scarf for her friend.",
-    ],
-    "distance": [
-        "She baked cookies for the neighbors.",
-        "He watched a movie with his family.",
-        "The cat slept on the windowsill.",
-        "They played board games after dinner.",
-    ],
-    "nature": [
-        "She finished her homework before dinner.",
-        "He practiced piano every afternoon.",
-        "The library was open until nine.",
-        "They decorated the room with balloons.",
-        "The mountain trail was peaceful and quiet.",
-        "He enjoyed swimming at the local pool.",
-        "She learned to play the guitar.",
-        "He read a book in the afternoon.",
-        "She painted a picture on the weekend.",
-        "They watched a movie together.",
-    ],
-    "default": [
-        "The weather was pleasant that afternoon.",
-        "She enjoyed her morning coffee.",
-        "He took a short nap after lunch.",
-        "The neighborhood was quiet and peaceful.",
+    "event": [
+        "Her birthday party had gone late into the evening.",
+        "The family reunion was happening next month.",
+        "A wedding announcement arrived in the mail yesterday.",
+        "His retirement celebration was scheduled for Friday.",
+        "The graduation ceremony lasted longer than expected.",
     ],
 }
 
-# ── in_topic templates ────────────────────────────────────────────────────────
+TOPIC_AVOID_DOMAINS = {
+    "money":    {"community", "event"},
+    "shopping": {"community", "household"},
+    "work":     {"community", "event"},
+    "time":     {"event"},
+    "school":   {"event", "community"},
+    "distance": {"travel"},
+    "nature":   {"household", "weather"},
+    "food":     {"household", "event"},
+}
 
-PERSON_UNIT_TEMPLATES = [
-    "{person} also had {number} {unit}.",
-    "{person} bought {number} more {unit}.",
-    "{person} gave away {number} {unit} yesterday.",
-    "{person} found {number} extra {unit} at home.",
+
+# =============================================================================
+# UNIT CLASSIFICATION
+# =============================================================================
+# Every unit maps to one category. Templates are selected based on category.
+
+UNIT_CATEGORY = {
+    # money
+    "dollar": "money", "dollars": "money",
+    "cent": "money", "cents": "money",
+    "$": "money", "€": "money", "£": "money",
+    # time
+    "second": "time", "seconds": "time",
+    "minute": "time", "minutes": "time",
+    "hour": "time", "hours": "time",
+    "day": "time", "days": "time",
+    "week": "time", "weeks": "time",
+    "month": "time", "months": "time",
+    "year": "time", "years": "time",
+    # distance
+    "mile": "distance", "miles": "distance",
+    "km": "distance", "kilometer": "distance", "kilometers": "distance",
+    "m": "distance", "meter": "distance", "meters": "distance",
+    "cm": "distance",
+    # weight
+    "pound": "weight", "pounds": "weight", "lb": "weight", "lbs": "weight",
+    "kg": "weight", "g": "weight", "mg": "weight",
+    "oz": "weight",
+    # volume (treated like weight for template purposes)
+    "l": "weight", "ml": "weight",
+    # percent
+    "%": "percent",
+    # everything alphabetic and not above -> "count" (apples, clips, books...)
+}
+
+
+def classify_unit(unit: str) -> str | None:
+    """Return category string or None if we can't classify."""
+    if not unit:
+        return None
+    u = unit.strip().lower()
+    if u in UNIT_CATEGORY:
+        return UNIT_CATEGORY[u]
+    # Alphabetic, length 3+ => treat as count noun
+    if u.isalpha() and len(u) >= 3:
+        return "count"
+    return None
+
+
+def allow_weight_templates(raw_unit: str | None, topics: list[str], question: str) -> bool:
+    if not raw_unit:
+        return False
+    u = raw_unit.strip().lower()
+    q = question.lower()
+    strong_weight_words = {"weigh", "weight", "pound", "pounds", "kg", "gram", "grams", "ounce", "ounces", "liter", "liters", "ml"}
+    if any(w in q for w in strong_weight_words):
+        return True
+    if any(t in {"food", "shopping", "nature"} for t in topics):
+        return True
+    # tiny cooking-style weights are too easy to make awkward outside relevant domains
+    if u in {"g", "mg", "ml"}:
+        return False
+    return True
+
+
+# -----------------------------------------------------------------------------
+# Phrase builders per category
+# -----------------------------------------------------------------------------
+# Each returns a ready-to-use noun phrase (e.g., "5 kg of flour", "$30",
+# "3 apples", "12 minutes"). Weight units get substance contextualization.
+
+WEIGHT_SUBSTANCES = {
+    "kg":      ["flour", "rice", "feed", "produce", "grain"],
+    "g":       ["coffee", "tea", "herbs", "cocoa"],
+    "mg":      ["medicine"],
+    "l":       ["water", "juice", "milk", "oil"],
+    "ml":      ["oil", "vinegar", "syrup"],
+    "oz":      ["cheese", "coffee", "tea"],
+    "lb":      ["flour", "potatoes", "produce"],
+    "lbs":     ["flour", "potatoes", "produce"],
+    "pound":   ["flour", "potatoes", "produce"],
+    "pounds":  ["flour", "potatoes", "produce"],
+}
+
+
+def pluralize(word: str, n) -> str:
+    try:
+        n_val = float(n)
+    except (TypeError, ValueError):
+        n_val = 2
+
+    if word.endswith("s") and not word.endswith("ss"):
+        if n_val == 1:
+            if word.endswith("ies"):
+                return word[:-3] + "y"
+            if word.endswith("es") and len(word) > 3:
+                return word[:-2]
+            return word[:-1]
+        return word
+    if n_val == 1:
+        return word
+    if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
+        return word[:-1] + "ies"
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return word + "es"
+    return word + "s"
+
+
+def build_phrase(unit: str, number, category: str) -> str | None:
+    """Build a ready-to-insert noun phrase given a unit and number."""
+    u = unit.strip().lower()
+
+    if category == "money":
+        if u in {"$", "€", "£"}:
+            return f"{u}{_fmt(number)}"
+        return f"{_fmt(number)} {pluralize(u, number)}"
+
+    if category == "time":
+        return f"{_fmt(number)} {pluralize(u, number)}"
+
+    if category == "distance":
+        # Don't pluralize abbreviations like "km"
+        if u in {"km", "cm", "m"}:
+            return f"{_fmt(number)} {u}"
+        return f"{_fmt(number)} {pluralize(u, number)}"
+
+    if category == "weight":
+        substances = WEIGHT_SUBSTANCES.get(u)
+        if substances:
+            subst = random.choice(substances)
+            return f"{_fmt(number)} {u} of {subst}"
+        return None  # no substance -> can't form natural phrase
+
+    if category == "count":
+        return f"{_fmt(number)} {pluralize(u, number)}"
+
+    # percent has no phrase form; caller handles it separately
+    return None
+
+
+# =============================================================================
+# IN-TOPIC TEMPLATES — gated by unit category
+# =============================================================================
+# Each category has PERSON templates and NO-PERSON templates.
+# Templates use natural verbs/contexts for that unit type.
+
+# ---- money ----
+IN_TOPIC_MONEY_PERSON = [
+    "{person} had paid {phrase} for a similar purchase last week.",
+    "{person} had set aside {phrase} for a different expense.",
+    "On a separate occasion, {person} had budgeted {phrase}.",
+    "A neighbor of {person} had recently spent {phrase}.",
+    "At another shop, {person} saw the same item priced at {phrase}.",
 ]
-UNIT_ONLY_TEMPLATES = [
-    "There were {number} extra {unit} available.",
-    "Another {number} {unit} were added.",
-    "{number} more {unit} were left over.",
-    "A total of {number} {unit} were not counted.",
-]
-PERSON_ONLY_TEMPLATES = [
-    "{person} also had {number} items.",
-    "{person} counted {number} more things.",
-    "{person} found {number} extra objects.",
-]
-GENERIC_TEMPLATES = [
-    "There were {number} more items available.",
-    "Another {number} things were added.",
-    "{number} extra objects were left over.",
+IN_TOPIC_MONEY_NO_PERSON = [
+    "At another store, the same kind of item was priced at {phrase}.",
+    "A similar purchase elsewhere had cost {phrase}.",
+    "A different vendor had set the price at {phrase}.",
+    "The market average that week was around {phrase}.",
 ]
 
-# ── no_op templates ───────────────────────────────────────────────────────────
-
-NO_OP_PERSON_UNIT_TEMPLATES = [
-    "{person} had bought {number} {unit} the previous month.",
-    "Originally, {person} had {number} {unit} before this.",
-    "Last year, {person} had {number} {unit} in total.",
-    "{person} started with {number} {unit} at the beginning.",
-    "Before this happened, {person} already had {number} {unit}.",
-    "If the offer applied, {person} would have received {number} {unit}.",
-    "Had the deal gone through, {person} would have had {number} {unit}.",
-    "{person} had a coupon for {number} {unit} but it had already expired.",
-    "A discount of {number} {unit} was offered to {person} but not applied.",
-    "{person} had ordered {number} extra {unit} but the order was cancelled.",
+# ---- time ----
+IN_TOPIC_TIME_PERSON = [
+    "{person} had spent {phrase} on a different task earlier that week.",
+    "On another occasion, {person} had taken {phrase} to finish a similar job.",
+    "{person} had scheduled {phrase} for a separate activity that day.",
+    "An earlier plan had allowed {person} {phrase} for another task.",
 ]
-NO_OP_UNIT_ONLY_TEMPLATES = [
-    "There were originally {number} {unit} before this.",
-    "Last week, there were {number} {unit} in total.",
-    "Previously, {number} {unit} had already been counted.",
-    "At the start, there were {number} {unit} available.",
-    "If the promotion had applied, there would have been {number} {unit}.",
-    "Had the shipment arrived, there would be {number} more {unit}.",
-    "A bulk order of {number} {unit} was placed but later cancelled.",
-    "An offer of {number} {unit} was available but had already expired.",
-]
-NO_OP_PERSON_ONLY_TEMPLATES = [
-    "{person} had previously counted {number} items.",
-    "Originally, {person} had {number} things in total.",
-    "Before this, {person} already owned {number} objects.",
-    "Last month, {person} had {number} items.",
-    "If the plan had worked, {person} would have had {number} more.",
-    "Had things gone differently, {person} would have counted {number} items.",
-    "{person} had a voucher worth {number} but it was not valid.",
-    "An additional {number} items were reserved for {person} but not delivered.",
-]
-NO_OP_GENERIC_TEMPLATES = [
-    "There were originally {number} items before this.",
-    "Previously, {number} things had already been counted.",
-    "At the beginning, there were {number} objects in total.",
-    "Last week, {number} items were already accounted for.",
-    "If the conditions had been met, there would have been {number} more.",
-    "Had the discount applied, the total would have been {number}.",
-    "A promotional offer of {number} was available but had since expired.",
-    "An order for {number} extra items was placed but later cancelled.",
+IN_TOPIC_TIME_NO_PERSON = [
+    "A similar task elsewhere had taken {phrase}.",
+    "Another group had spent {phrase} on a comparable project.",
+    "In a different setting, the same work required {phrase}.",
+    "An earlier estimate had put the duration at {phrase}.",
 ]
 
-# Generic subjects by topic
+# ---- distance ----
+IN_TOPIC_DISTANCE_PERSON = [
+    "{person} had walked {phrase} on a different outing last week.",
+    "On a separate trip, {person} had driven {phrase}.",
+    "{person} had traveled {phrase} for an unrelated errand that day.",
+    "An earlier route connected with {person} covered {phrase}.",
+]
+IN_TOPIC_DISTANCE_NO_PERSON = [
+    "A different route in the area covered {phrase}.",
+    "Another traveler had gone {phrase} that same day.",
+    "A nearby trail was known to be {phrase} long.",
+    "The alternate path was roughly {phrase}.",
+]
+
+# ---- weight ----
+IN_TOPIC_WEIGHT_PERSON = [
+    "{person} had bought {phrase} at a different store that week.",
+    "On another trip, {person} had weighed out {phrase} for a separate order.",
+    "{person} had ordered {phrase} for a different delivery.",
+    "A previous purchase linked to {person} included {phrase}.",
+]
+IN_TOPIC_WEIGHT_NO_PERSON = [
+    "Another batch contained {phrase} of similar quality.",
+    "A different supplier delivered {phrase} that same week.",
+    "The nearby market had {phrase} available at the time.",
+    "A parallel order included {phrase} as well.",
+]
+
+# ---- count ----
+IN_TOPIC_COUNT_PERSON = [
+    "{person} had seen {phrase} at another store that day.",
+    "{person} had considered buying {phrase} last week.",
+    "At one point, {person} had counted {phrase} in a different collection.",
+    "A separate batch connected to {person} included {phrase}.",
+]
+IN_TOPIC_COUNT_NO_PERSON = [
+    "At a different store, there were {phrase} on display.",
+    "Another supplier had {phrase} in stock.",
+    "A nearby shop had {phrase} that week.",
+    "A separate batch contained {phrase} in total.",
+]
+
+# ---- percent ----
+IN_TOPIC_PERCENT = [
+    "An earlier survey showed {number}% of respondents agreed.",
+    "A recent study found {number}% of participants benefited.",
+    "Approximately {number}% of the samples were set aside.",
+    "A report noted that {number}% of cases were reviewed separately.",
+]
+
+
+# =============================================================================
+# NO-OP TEMPLATES — gated by unit category
+# =============================================================================
+# Same category gating. Each template has a hypothetical/historical marker.
+
+# ---- money ----
+NO_OP_MONEY_PERSON = [
+    "A coupon worth {phrase} had been given to {person}, but it had expired.",
+    "{person} had been offered a discount of {phrase}, which went unused.",
+    "A refund of {phrase} had been promised to {person}, but never processed.",
+    "If the earlier offer had applied, {person} would have saved {phrase}.",
+    "{person} had budgeted {phrase} previously, though that plan was cancelled.",
+]
+NO_OP_MONEY_NO_PERSON = [
+    "A previous promotion offered {phrase} off, but it had since expired.",
+    "An earlier refund of {phrase} had been promised but never paid out.",
+    "Had the old pricing remained, the total would have been {phrase}.",
+    "A past invoice for {phrase} was issued but later voided.",
+]
+
+# ---- time ----
+NO_OP_TIME_PERSON = [
+    "{person} had originally scheduled {phrase} for this task, but the plan changed.",
+    "An earlier estimate gave {person} {phrase}, though that no longer applies.",
+    "If the deadline had held, {person} would have had {phrase} to finish.",
+    "{person} had set aside {phrase} previously, but the meeting was cancelled.",
+]
+NO_OP_TIME_NO_PERSON = [
+    "An earlier schedule had allowed {phrase} for this step, but it was revised.",
+    "If the original timeline had held, the process would have taken {phrase}.",
+    "A previous plan reserved {phrase}, though that estimate is now outdated.",
+    "Had the deadline not shifted, there would have been {phrase} available.",
+]
+
+# ---- distance ----
+NO_OP_DISTANCE_PERSON = [
+    "{person} had originally planned to walk {phrase}, but took a shortcut.",
+    "An earlier route for {person} covered {phrase}, though it was abandoned.",
+    "If {person} had taken the long way, they would have traveled {phrase}.",
+    "{person} had previously driven {phrase}, but that trip is unrelated here.",
+]
+NO_OP_DISTANCE_NO_PERSON = [
+    "The original route was {phrase}, but it was changed before departure.",
+    "An earlier map marked the distance as {phrase}, which proved inaccurate.",
+    "Had the longer path been chosen, the trip would have been {phrase}.",
+    "A previous estimate put the distance at {phrase}, but it no longer applies.",
+]
+
+# ---- weight ----
+NO_OP_WEIGHT_PERSON = [
+    "{person} had ordered {phrase} the previous week, but it was returned.",
+    "An earlier shipment of {phrase} had been sent to {person}, but was recalled.",
+    "Had the supplier delivered, {person} would have received {phrase}.",
+    "{person} had weighed out {phrase} earlier, though that batch was discarded.",
+]
+NO_OP_WEIGHT_NO_PERSON = [
+    "A previous shipment of {phrase} had been returned some time ago.",
+    "An earlier batch of {phrase} had been set aside and later discarded.",
+    "Had the delivery arrived, there would have been {phrase} more in stock.",
+    "A past order for {phrase} was placed but never fulfilled.",
+]
+
+# ---- count ----
+NO_OP_COUNT_PERSON = [
+    "{person} had owned {phrase} the previous month but sold them.",
+    "At an earlier point, {person} had {phrase}, though that was before this.",
+    "{person} had initially ordered {phrase}, but the order was cancelled.",
+    "Before any of this, {person} had held {phrase}, unrelated to the current count.",
+]
+NO_OP_COUNT_NO_PERSON = [
+    "Previously, there had been {phrase}, but those were used up long ago.",
+    "A past inventory recorded {phrase}, which no longer applies here.",
+    "An older shipment of {phrase} had been returned some time ago.",
+    "Had the order gone through, there would have been {phrase}.",
+]
+
+# ---- percent ----
+NO_OP_PERCENT = [
+    "Earlier, a discount of {number}% had been offered, but it had since expired.",
+    "A previous survey showed {number}% agreement, though that data is outdated.",
+    "Had conditions been different, {number}% of the supply would have been reserved.",
+    "A past report mentioned {number}%, but that figure no longer applies.",
+]
+
+
+# Bundle per-category lookup
+IN_TOPIC_TEMPLATES = {
+    "money":    (IN_TOPIC_MONEY_PERSON, IN_TOPIC_MONEY_NO_PERSON),
+    "time":     (IN_TOPIC_TIME_PERSON, IN_TOPIC_TIME_NO_PERSON),
+    "distance": (IN_TOPIC_DISTANCE_PERSON, IN_TOPIC_DISTANCE_NO_PERSON),
+    "weight":   (IN_TOPIC_WEIGHT_PERSON, IN_TOPIC_WEIGHT_NO_PERSON),
+    "count":    (IN_TOPIC_COUNT_PERSON, IN_TOPIC_COUNT_NO_PERSON),
+}
+
+NO_OP_TEMPLATES = {
+    "money":    (NO_OP_MONEY_PERSON, NO_OP_MONEY_NO_PERSON),
+    "time":     (NO_OP_TIME_PERSON, NO_OP_TIME_NO_PERSON),
+    "distance": (NO_OP_DISTANCE_PERSON, NO_OP_DISTANCE_NO_PERSON),
+    "weight":   (NO_OP_WEIGHT_PERSON, NO_OP_WEIGHT_NO_PERSON),
+    "count":    (NO_OP_COUNT_PERSON, NO_OP_COUNT_NO_PERSON),
+}
+
+
+# =============================================================================
+# PERSON & TOPIC HELPERS
+# =============================================================================
+
 TOPIC_SUBJECTS = {
-    "school":   ["A student", "A teacher", "A classmate"],
-    "shopping": ["A customer", "A shopper", "A buyer"],
-    "work":     ["A worker", "An employee", "A colleague"],
-    "food":     ["A chef", "A customer", "A visitor"],
-    "money":    ["A customer", "A client", "A vendor"],
-    "time":     ["Someone", "A person", "A participant"],
-    "distance": ["A traveler", "A runner", "A driver"],
-    "nature":   ["A farmer", "A visitor", "A gardener"],
-    "default":  ["Someone", "A person", "A participant"],
+    "school":   ["A student", "A classmate", "A teacher"],
+    "shopping": ["A customer", "A shopper", "A passerby"],
+    "work":     ["A colleague", "An employee", "A coworker"],
+    "food":     ["A cook", "A patron", "A diner"],
+    "money":    ["A client", "A vendor", "An accountant"],
+    "time":     ["Someone nearby", "A participant", "A bystander"],
+    "distance": ["A traveler", "A commuter", "A cyclist"],
+    "nature":   ["A gardener", "A hiker", "A farmhand"],
+}
+
+PERSON_REJECT = {
+    "Western", "Eastern", "Northern", "Southern", "Central",
+    "iPhone", "iPad", "Android", "Google", "Amazon", "Netflix",
+    "Striploin", "Ribeye", "Sirloin", "Brisket", "Chuck",
+    "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+    "Mr", "Mrs", "Ms", "Dr", "Jr", "Sr",
 }
 
 
-# ── helper functions ──────────────────────────────────────────────────────────
-
-def generate_fake_number(original: float) -> float:
-    """
-    Generate a fake number near the original but different.
-    Preserves the same format (integer vs decimal, same decimal places).
-    Uses a random delta of 30-70% of the original to avoid fixed ratios.
-    Retries up to 5 times to ensure the result differs from the original.
-    """
-    if original == int(original):
-        for _ in range(5):
-            delta = random.uniform(0.3, 0.7) * original
-            fake = original + delta if random.random() < 0.5 else original - delta
-            result = max(1, int(round(fake)))
-            if result != int(original):
-                return result
-        # fallback: add or subtract a random amount between 1 and max(2, original//2)
-        offset = random.randint(1, max(2, int(original // 2)))
-        return max(1, int(original) + random.choice([-1, 1]) * offset)
-    else:
-        decimal_places = len(str(original).rstrip("0").split(".")[-1])
-        min_val = 10 ** (-decimal_places)
-        for _ in range(5):
-            delta = random.uniform(0.3, 0.7) * original
-            fake = original + delta if random.random() < 0.5 else original - delta
-            result = round(max(min_val, fake), decimal_places)
-            if result != original:
-                return result
-        return round(original + min_val, decimal_places)
+def is_good_person(name: str) -> bool:
+    if not name or len(name) < 3:
+        return False
+    if name in PERSON_REJECT:
+        return False
+    if name.isupper() or name.islower():
+        return False
+    if not name[0].isupper():
+        return False
+    return True
 
 
-def get_person(persons, topics):
-    if persons:
-        return random.choice(persons)
-    key = topics[0] if topics else "default"
-    return random.choice(TOPIC_SUBJECTS.get(key, TOPIC_SUBJECTS["default"]))
+def get_person(persons: list[str], topics: list[str]) -> str | None:
+    good_names = [p for p in persons if is_good_person(p)]
+    if good_names:
+        return random.choice(good_names)
+    key = topics[0] if topics else None
+    if key and key in TOPIC_SUBJECTS:
+        return random.choice(TOPIC_SUBJECTS[key])
+    return None
 
 
-def extract_solution_numbers(solution: str) -> list[float]:
-    """Extract numbers from solution steps (before ####) — these are the
-    numbers actually used in the calculation, preferred for distractor generation."""
-    import re
-    sol_text = solution.split("####")[0]
-    nums = set()
-    for m in re.findall(r"(?<!\w)(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?(?!\w)", sol_text):
+# =============================================================================
+# NUMBER & FILTER HELPERS
+# =============================================================================
+
+_NUM_RE = re.compile(r"(?<!\w)\d[\d,]*(?:\.\d+)?(?!\w)")
+
+
+def _get_numbers(text: str) -> set[float]:
+    nums: set[float] = set()
+    for m in _NUM_RE.finditer(text):
         try:
-            nums.add(float(m.replace(",", "")))
+            nums.add(float(m.group(0).replace(",", "")))
         except ValueError:
             pass
-    return list(nums)
+    return nums
+
+
+def extract_solution_numbers(solution: str) -> set[float]:
+    return _get_numbers(solution.split("####")[0])
 
 
 def extract_question_only_numbers(question: str, solution: str) -> list[float]:
-    """
-    Find numbers that appear in the question but NOT in the solution steps.
-    These are numbers the model might think are relevant but are never used.
-    Ideal for no_op distractors — using these makes the distractor more deceptive.
-    Falls back to all question numbers if none are found.
-    """
-    import re
-    def get_nums(text):
-        nums = set()
-        for m in re.findall(r"(?<!\w)(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?(?!\w)", text):
-            try:
-                nums.add(float(m.replace(",", "")))
-            except ValueError:
-                pass
-        return nums
-
-    q_nums  = get_nums(question)
-    sol_nums = get_nums(solution.split("####")[0])
+    q_nums = _get_numbers(question)
+    sol_nums = extract_solution_numbers(solution)
     unused = list(q_nums - sol_nums)
     return unused if unused else list(q_nums)
 
 
-def generate_off_topic(topics: list[str]) -> str:
-    avoid = set(topics)
-    available = [t for t in OFF_TOPIC_POOLS if t not in avoid and t != "default"]
-    chosen = random.choice(available) if available else "default"
-    return random.choice(OFF_TOPIC_POOLS[chosen])
+def generate_fake_number(original: float, forbidden: set[float]) -> float:
+    if original == int(original):
+        base = int(original)
+        for _ in range(20):
+            delta = random.randint(max(1, base // 3), max(2, base + 3))
+            fake = float(base + random.choice([-1, 1]) * delta)
+            if fake > 0 and fake not in forbidden:
+                return fake
+        return float(base + random.randint(5, 20))
+    else:
+        decimals = len(str(original).rstrip("0").split(".")[-1])
+        for _ in range(20):
+            delta = round(random.uniform(0.3, 0.9) * abs(original), decimals)
+            fake = round(original + random.choice([-1, 1]) * delta, decimals)
+            if fake > 0 and fake not in forbidden:
+                return fake
+        return round(original + 10 ** (-decimals) * 3, decimals)
 
 
-def generate_in_topic(hints: dict, topics: list[str], gold_answer: float = None) -> str | None:
-    numbers = hints["numbers"]
-    sol_numbers = hints.get("solution_numbers", [])
+def contains_phrase_from_question(distractor: str, question: str) -> bool:
+    d_tokens = distractor.lower().split()
+    q_lower = question.lower()
+    for i in range(len(d_tokens) - 5):
+        span = " ".join(d_tokens[i:i + 6])
+        if span in q_lower:
+            return True
+    return False
+
+
+# Hard reject patterns (safety net; templates should prevent these anyway)
+REJECT_PATTERNS = [
+    re.compile(r"\bitems?\b", re.IGNORECASE),
+    re.compile(r"\bthings?\b", re.IGNORECASE),
+    re.compile(r"\bobjects?\b", re.IGNORECASE),
+    re.compile(r"\bstuff\b", re.IGNORECASE),
+    re.compile(r"\d+\s*%(?!\s+(of|agreement|agreed|participants|respondents|cases|samples|voters|supply))", re.IGNORECASE),
+    re.compile(r"\d+\s*g\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\d+\s*kg\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\d+\s*ml\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\d+\s*oz\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\d+\s*lbs?\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\d+\s*mg\b(?!\s+of\s+\w)", re.IGNORECASE),
+    re.compile(r"\b(friend|coworker) of\b", re.IGNORECASE),
+    re.compile(r"\bkept\b.*\bat home\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*g\s+of\s+(sugar|spice)\b", re.IGNORECASE),
+    # Unit-context mismatch patterns (catch any leaks from old-style templates)
+    re.compile(r"coupon\s+(worth|for)\s+\d+\s*(minutes?|hours?|days?|weeks?|months?|years?|miles?|km|meters?|m)\b", re.IGNORECASE),
+    re.compile(r"\b(received|gift|present)\s+.*\b\d+\s*(minutes?|hours?|miles?|km|kg|g|lbs?|pounds?)\b.*\b(as a gift|as a present)\b", re.IGNORECASE),
+    re.compile(r"mentioned\s+having\s+\d+\s*(minutes?|miles?|km|meters?|hours?)\b", re.IGNORECASE),
+]
+
+
+def passes_reject_filter(distractor: str) -> bool:
+    for pat in REJECT_PATTERNS:
+        if pat.search(distractor):
+            return False
+    return True
+
+
+def passes_filters(
+    distractor: str,
+    forbidden_numbers: set[float],
+    question: str,
+    min_words: int = 5,
+) -> bool:
+    if not distractor:
+        return False
+    if len(distractor.split()) < min_words:
+        return False
+    if _get_numbers(distractor) & forbidden_numbers:
+        return False
+    if contains_phrase_from_question(distractor, question):
+        return False
+    if not passes_reject_filter(distractor):
+        return False
+    return True
+
+
+def _fmt(n: float) -> str:
+    if n == int(n):
+        return str(int(n))
+    return str(n)
+
+
+# =============================================================================
+# GENERATORS
+# =============================================================================
+
+def generate_off_topic(topics: list[str], question: str, max_retries: int = 10) -> str | None:
+    forbidden_domains = set()
+    for t in topics:
+        forbidden_domains.update(TOPIC_AVOID_DOMAINS.get(t, set()))
+
+    available = [d for d in OFF_TOPIC_BY_DOMAIN if d not in forbidden_domains]
+    if not available:
+        available = list(OFF_TOPIC_BY_DOMAIN.keys())
+
+    q_nums = _get_numbers(question)
+    for _ in range(max_retries):
+        domain = random.choice(available)
+        candidate = random.choice(OFF_TOPIC_BY_DOMAIN[domain])
+        if passes_filters(candidate, q_nums, question, min_words=5):
+            return candidate
+    return None
+
+
+def _render_by_category(
+    category: str,
+    templates_bundle: dict,   # IN_TOPIC_TEMPLATES or NO_OP_TEMPLATES
+    phrase: str,
+    person: str | None,
+) -> str | None:
+    """Pick a template for this category and render it."""
+    if category not in templates_bundle:
+        return None
+    person_tpls, no_person_tpls = templates_bundle[category]
+    pool = person_tpls if person else no_person_tpls
+    tpl = random.choice(pool)
+    if person:
+        return tpl.format(person=person, phrase=phrase)
+    return tpl.format(phrase=phrase)
+
+
+def generate_in_topic(
+    hints: dict,
+    topics: list[str],
+    gold_answer: float | None,
+    question: str,
+    solution: str,
+    max_retries: int = 15,
+) -> str | None:
+    numbers = hints.get("numbers", [])
     if not numbers:
         return None
-    # Prefer solution numbers — more likely to mislead the model
-    candidates = sol_numbers if sol_numbers else numbers
-    chosen = random.choice(candidates)
-    fake = generate_fake_number(chosen)
-    # Retry until fake differs from chosen number and gold_answer
-    forbidden = {chosen, gold_answer} if gold_answer else {chosen}
-    for _ in range(10):
-        if fake not in forbidden:
-            break
-        fake = generate_fake_number(chosen)
-    # Fallback: if still in forbidden, jump by a random offset of 3-10
-    if fake in forbidden:
-        fake = float(int(fake) + random.randint(3, 10))
-        while fake in forbidden:
-            fake += 1
-    person = get_person(hints["persons"], topics)
-    unit   = random.choice(hints["units"]) if hints["units"] else None
-    if person and unit:
-        return random.choice(PERSON_UNIT_TEMPLATES).format(person=person, number=fake, unit=unit)
-    elif unit:
-        return random.choice(UNIT_ONLY_TEMPLATES).format(number=fake, unit=unit)
-    elif person:
-        return random.choice(PERSON_ONLY_TEMPLATES).format(person=person, number=fake)
-    else:
-        return random.choice(GENERIC_TEMPLATES).format(number=fake)
+
+    sol_nums = extract_solution_numbers(solution)
+    forbidden = set(sol_nums)
+    forbidden.update(_get_numbers(question))
+    if gold_answer is not None:
+        forbidden.add(float(gold_answer))
+
+    pool = list(sol_nums) if sol_nums else [float(n) for n in numbers]
+
+    raw_unit = random.choice(hints["units"]) if hints.get("units") else None
+    category = classify_unit(raw_unit) if raw_unit else None
+    person = get_person(hints.get("persons", []), topics)
+
+    if category == "weight" and not allow_weight_templates(raw_unit, topics, question):
+        return None
+
+    # Percent special case
+    if category == "weight" and not allow_weight_templates(raw_unit, topics, question):
+        return None
+
+    if category == "percent":
+        for _ in range(max_retries):
+            seed_num = random.choice(pool)
+            fake = generate_fake_number(seed_num, forbidden)
+            if fake > 100:
+                fake = fake % 100 + 1
+            candidate = random.choice(IN_TOPIC_PERCENT).format(number=_fmt(fake))
+            if passes_filters(candidate, forbidden, question, min_words=6):
+                return candidate
+        return None
+
+    # All other categories require a buildable phrase
+    if category is None:
+        return None  # unknown unit, don't guess
+
+    for _ in range(max_retries):
+        seed_num = random.choice(pool)
+        fake = generate_fake_number(seed_num, forbidden)
+
+        phrase = build_phrase(raw_unit, fake, category)
+        if not phrase:
+            continue
+
+        candidate = _render_by_category(category, IN_TOPIC_TEMPLATES, phrase, person)
+        if not candidate:
+            continue
+
+        if passes_filters(candidate, forbidden, question, min_words=6):
+            return candidate
+    return None
 
 
-def generate_no_op(hints: dict, topics: list[str], gold_answer: float = None,
-                   question: str = None, solution: str = None) -> str | None:
-    numbers = hints["numbers"]
+def generate_no_op(
+    hints: dict,
+    topics: list[str],
+    gold_answer: float | None,
+    question: str,
+    solution: str,
+    max_retries: int = 15,
+) -> str | None:
+    numbers = hints.get("numbers", [])
     if not numbers:
         return None
-    # Prefer numbers that appear in question but NOT in solution steps
-    # — these look relevant but were never used, making the distractor more deceptive
-    if question and solution:
-        candidates = extract_question_only_numbers(question, solution)
-    else:
-        candidates = numbers
-    chosen = random.choice(candidates) if candidates else random.choice(numbers)
-    fake = generate_fake_number(chosen)
-    # Retry until fake differs from chosen number and gold_answer
-    forbidden = {chosen, gold_answer} if gold_answer else {chosen}
-    for _ in range(10):
-        if fake not in forbidden:
-            break
-        fake = generate_fake_number(chosen)
-    # Fallback: if still in forbidden, jump by a random offset of 3-10
-    if fake in forbidden:
-        fake = float(int(fake) + random.randint(3, 10))
-        while fake in forbidden:
-            fake += 1
-    person = get_person(hints["persons"], topics)
-    unit   = random.choice(hints["units"]) if hints["units"] else None
-    if person and unit:
-        return random.choice(NO_OP_PERSON_UNIT_TEMPLATES).format(person=person, number=fake, unit=unit)
-    elif unit:
-        return random.choice(NO_OP_UNIT_ONLY_TEMPLATES).format(number=fake, unit=unit)
-    elif person:
-        return random.choice(NO_OP_PERSON_ONLY_TEMPLATES).format(person=person, number=fake)
-    else:
-        return random.choice(NO_OP_GENERIC_TEMPLATES).format(number=fake)
+
+    sol_nums = extract_solution_numbers(solution)
+    forbidden = set(sol_nums)
+    if gold_answer is not None:
+        forbidden.add(float(gold_answer))
+
+    candidates = extract_question_only_numbers(question, solution)
+    pool = candidates if candidates else [float(n) for n in numbers]
+
+    raw_unit = random.choice(hints["units"]) if hints.get("units") else None
+    category = classify_unit(raw_unit) if raw_unit else None
+    person = get_person(hints.get("persons", []), topics)
+
+    if category == "percent":
+        for _ in range(max_retries):
+            seed_num = random.choice(pool)
+            fake = generate_fake_number(seed_num, forbidden)
+            if fake > 100:
+                fake = fake % 100 + 1
+            candidate = random.choice(NO_OP_PERCENT).format(number=_fmt(fake))
+            if passes_filters(candidate, forbidden, question, min_words=8):
+                return candidate
+        return None
+
+    if category is None:
+        return None
+
+    for _ in range(max_retries):
+        seed_num = random.choice(pool)
+        fake = generate_fake_number(seed_num, forbidden)
+
+        phrase = build_phrase(raw_unit, fake, category)
+        if not phrase:
+            continue
+
+        candidate = _render_by_category(category, NO_OP_TEMPLATES, phrase, person)
+        if not candidate:
+            continue
+
+        if passes_filters(candidate, forbidden, question, min_words=8):
+            return candidate
+    return None
 
 
-# ── main generation loop ──────────────────────────────────────────────────────
+# =============================================================================
+# MAIN LOOP + VERIFY + SAMPLES
+# =============================================================================
 
 def generate_distractors(
-    input_path:  str = "gsm8k_extracted.json",
+    input_path: str = "gsm8k_extracted.json",
     output_path: str = "gsm8k_distractors.json",
 ) -> list[dict]:
-
     print(f"Loading {input_path}...")
-    with open(input_path) as f:
+    with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
     print(f"  {len(data)} records loaded.")
 
     records = []
+    fail_counts = {"off_topic": 0, "in_topic": 0, "no_op": 0}
+
     for i, rec in enumerate(data):
-        hints  = rec["distractor_hints"]
+        hints = rec["distractor_hints"]
         topics = hints["off_topic"]["topics"]
+        question = rec["question"]
+        solution = rec["solution"]
+        gold_answer = rec.get("gold_answer")
 
-        # Inject solution numbers into in_topic hints for better distractor selection
-        hints["in_topic"]["solution_numbers"] = extract_solution_numbers(rec["solution"])
+        in_topic_hints = dict(hints["in_topic"])
+        if not in_topic_hints.get("persons"):
+            in_topic_hints["persons"] = hints["off_topic"].get("persons", [])
 
-        record = {
-            "id":          rec["id"],
-            "question":    rec["question"],
-            "solution":    rec["solution"],
-            "gold_answer": rec["gold_answer"],
+        dist_off = generate_off_topic(topics, question)
+        dist_in = generate_in_topic(in_topic_hints, topics, gold_answer, question, solution)
+        dist_noop = generate_no_op(in_topic_hints, topics, gold_answer, question, solution)
+
+        if dist_off is None: fail_counts["off_topic"] += 1
+        if dist_in is None: fail_counts["in_topic"] += 1
+        if dist_noop is None: fail_counts["no_op"] += 1
+
+        records.append({
+            "id": rec["id"],
+            "question": question,
+            "solution": solution,
+            "gold_answer": gold_answer,
             "distractors": {
-                "off_topic": generate_off_topic(topics),
-                "in_topic":  generate_in_topic(hints["in_topic"], topics, rec["gold_answer"]),
-                "no_op":     generate_no_op(hints["in_topic"], topics, rec["gold_answer"],
-                                           rec["question"], rec["solution"]),
-            }
-        }
-        records.append(record)
+                "off_topic": dist_off,
+                "in_topic": dist_in,
+                "no_op": dist_noop,
+            },
+        })
 
         if (i + 1) % 500 == 0:
-            print(f"  processed {i+1}/{len(data)}")
+            print(f"  processed {i + 1}/{len(data)}")
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
     print(f"\nDone! Saved {len(records)} records -> {output_path}")
-    print(f"  off_topic: {sum(1 for r in records if r['distractors']['off_topic'])}")
-    print(f"  in_topic:  {sum(1 for r in records if r['distractors']['in_topic'])}")
-    print(f"  no_op:     {sum(1 for r in records if r['distractors']['no_op'])}")
+    print(f"Coverage:")
+    for dtype in ("off_topic", "in_topic", "no_op"):
+        filled = sum(1 for r in records if r["distractors"][dtype])
+        print(f"  {dtype:10} {filled:5}/{len(records)} ({100 * filled / len(records):.1f}%), "
+              f"failed: {fail_counts[dtype]}")
     return records
 
 
-# ── verify ────────────────────────────────────────────────────────────────────
-
-def verify(records: list[dict], extracted: list[dict]) -> None:
-    import re
-    TOPIC_KEYWORDS = {
-        "money":    ["dollar", "cent", "price", "cost", "pay", "spend", "profit", "wage"],
-        "time":     ["hour", "minute", "second", "month", "year"],
-        "food":     ["apple", "orange", "banana", "cake", "pizza", "meal", "food", "drink"],
-        "distance": ["mile", "km", "kilometer", "meter", "drive", "traveled", "distance"],
-        "school":   ["student", "teacher", "class", "school", "grade", "exam", "lesson"],
-        "work":     ["worker", "employee", "job", "salary", "shift", "factory", "hired", "workplace"],
-        "shopping": ["buy", "sell", "store", "shop", "item", "product", "order"],
-        "nature":   ["farm", "animal", "fish", "forest", "river", "crop", "wildlife"],
-    }
+def verify(records: list[dict]) -> None:
     NO_OP_MARKERS = [
         "previously", "originally", "last year", "last week", "last month",
-        "previous month", "previous", "before this", "at the start",
-        "at the beginning", "already",
-        "if the", "had the", "would have",
-        "expired", "cancelled", "not applied", "not valid", "not delivered",
+        "before", "earlier", "at one point", "at an earlier", "older",
+        "if ", "had ", "would have",
+        "expired", "cancelled", "returned", "discarded", "outdated",
+        "no longer", "unrelated", "voided", "recalled", "abandoned",
     ]
-    extracted_map = {r["id"]: r for r in extracted}
     issues = []
+    reject_hits = 0
 
     for rec in records:
-        id     = rec["id"]
-        dist   = rec["distractors"]
-        orig   = rec["question"]
-        topics = extracted_map[id]["distractor_hints"]["off_topic"]["topics"]
-        orig_nums = set(float(m.replace(",","")) for m in re.findall(r"\d[\d,]*(?:\.\d+)?", orig))
+        id_ = rec["id"]
+        dist = rec["distractors"]
+        question = rec["question"]
+        gold = rec.get("gold_answer")
+        sol_nums = extract_solution_numbers(rec["solution"])
 
-        if not dist.get("off_topic"):
-            issues.append(f"ID {id}: off_topic is empty")
-        else:
-            d = dist["off_topic"]
-            d_nums = set(float(m.replace(",","")) for m in re.findall(r"\d[\d,]*(?:\.\d+)?", d))
-            if d_nums & orig_nums:
-                issues.append(f"ID {id}: off_topic contains original number")
-            for topic in topics:
-                for kw in TOPIC_KEYWORDS.get(topic, []):
-                    if kw.lower() in d.lower():
-                        issues.append(f"ID {id}: off_topic contains topic keyword '{kw}'")
-                        break
+        for dtype in ("off_topic", "in_topic", "no_op"):
+            d = dist.get(dtype)
+            if not d:
+                continue
+            d_nums = _get_numbers(d)
+            if gold is not None and float(gold) in d_nums:
+                issues.append(f"ID {id_} [{dtype}]: contains gold answer {gold}")
+            if dtype in ("in_topic", "no_op") and (d_nums & sol_nums):
+                issues.append(f"ID {id_} [{dtype}]: collides with solution numbers")
+            if dtype == "no_op" and not any(m in d.lower() for m in NO_OP_MARKERS):
+                issues.append(f"ID {id_} [no_op]: missing marker in: {d[:80]}")
+            if not passes_reject_filter(d):
+                reject_hits += 1
+                issues.append(f"ID {id_} [{dtype}]: reject pattern leaked: {d[:80]}")
 
-        # in_topic: number must not equal gold_answer
-        if dist.get("in_topic"):
-            d = dist["in_topic"]
-            d_nums = set(float(m.replace(",","")) for m in re.findall(r"\d[\d,]*(?:\.\d+)?", d))
-            gold = rec.get("gold_answer")
-            if gold and gold in d_nums:
-                issues.append(f"ID {id}: in_topic contains gold_answer {gold}")
-
-        # no_op: must have marker, number must not equal gold_answer
-        if dist.get("no_op"):
-            d = dist["no_op"]
-            if not any(m in d.lower() for m in NO_OP_MARKERS):
-                issues.append(f"ID {id}: no_op missing marker: {d}")
-            d_nums = set(float(m.replace(",","")) for m in re.findall(r"\d[\d,]*(?:\.\d+)?", d))
-            gold = rec.get("gold_answer")
-            if gold and gold in d_nums:
-                issues.append(f"ID {id}: no_op contains gold_answer {gold}")
-
-    print(f"Verified {len(records)} records.")
-    print(f"  off_topic: {sum(1 for r in records if r['distractors']['off_topic'])}")
-    print(f"  in_topic:  {sum(1 for r in records if r['distractors']['in_topic'])}")
-    print(f"  no_op:     {sum(1 for r in records if r['distractors']['no_op'])}")
-    print()
+    print(f"\nVerified {len(records)} records.")
+    if reject_hits:
+        print(f"[!] {reject_hits} reject-pattern leaks (bug - filter should have caught)")
     if issues:
         print(f"Found {len(issues)} issue(s):")
         for issue in issues[:20]:
@@ -449,11 +845,37 @@ def verify(records: list[dict], extracted: list[dict]) -> None:
         print("All checks passed!")
 
 
-if __name__ == "__main__":
-    records = generate_distractors(
-        input_path="gsm8k_extracted.json",
-        output_path="gsm8k_distractors.json",
+def show_samples(records: list[dict], n: int = 8) -> None:
+    complete = [r for r in records if all(r["distractors"].values())]
+    pool = complete if len(complete) >= n else records
+    samples = random.sample(pool, min(n, len(pool)))
+    print(f"\n{'=' * 70}")
+    print(f"{n} RANDOM SAMPLES (all 3 distractors filled):")
+    print(f"{'=' * 70}")
+    for rec in samples:
+        print(f"\n--- id={rec['id']} (gold={rec['gold_answer']}) ---")
+        print(f"Q: {rec['question'][:250]}")
+        for dtype, d in rec["distractors"].items():
+            print(f"  [{dtype:10}] {d}")
+
+
+def generate_for_both_splits() -> None:
+    print("\n=== Generating distractors for TRAIN split ===")
+    train_records = generate_distractors(
+        input_path="gsm8k_train_extracted.json",
+        output_path="gsm8k_train_distractors.json",
     )
-    with open("gsm8k_extracted.json") as f:
-        extracted = json.load(f)
-    verify(records, extracted)
+    verify(train_records)
+    show_samples(train_records, n=10)
+
+    print("\n=== Generating distractors for TEST split ===")
+    test_records = generate_distractors(
+        input_path="gsm8k_test_extracted.json",
+        output_path="gsm8k_test_distractors.json",
+    )
+    verify(test_records)
+    show_samples(test_records, n=10)
+
+
+if __name__ == "__main__":
+    generate_for_both_splits()

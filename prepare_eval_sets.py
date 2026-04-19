@@ -10,11 +10,6 @@ ACTIVE:
 
 TODO:
   4. Template-distracted GSM8K test set      - needs Task #10
-
-Output files:
-  gsm_plus_distractor.json
-  gsm_dc.json
-  info_dense.json
 """
 
 import json
