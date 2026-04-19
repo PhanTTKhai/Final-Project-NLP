@@ -8,7 +8,7 @@ distractor sentence into the original question at a random position
 Also builds the three training sets required by the paper:
   - train_clean.json  : 7,473 original questions only
   - train_mixed.json  : original + off_topic + in_topic + no_op (~29,892)
-  - train_hard.json   : original + no_op only (~14,946)
+  - train_noop.json   : original + no_op only (~14,946)
 
 Each training example is formatted as a chat message for SFT:
   system:    "Focus only on information relevant to solving the problem..."
@@ -76,15 +76,31 @@ def to_training_example(question: str, solution: str, gold_answer: float,
         "_attempt": 1,
     }
 
+# ── helper picker function ───────────────────────────────────────────────────────────
+def get_binary_variant(index, question, distractors, dist_type):
+    """
+    Returns (question, label), label = 'clean' or the dist_type
+    Returns the original question for even indices (1/2 clean)
+    and the distracted version for odd indices (1/2 distractor).
+    """
+    if index % 2 == 0:
+        return question, "clean"
+    
+    # Try to get the specific distractor; fallback to clean if missing
+    dist_text = distractors.get(dist_type)
+    if dist_text:
+        return insert_distractor(question, dist_text), dist_type
+    return question, "clean"
 
 # ── main insertion loop ───────────────────────────────────────────────────────
 
 def build_training_sets(
     input_path:    str = "gsm8k_distractors.json",
     distilled_path: str = "gsm8k_train_distilled.jsonl",
-    clean_path:    str = "train_clean.jsonl",
     mixed_path:    str = "train_mixed.jsonl",
-    hard_path:     str = "train_hard.jsonl",
+    noop_path:     str = "train_noop.jsonl",
+    in_topic_path: str = "train_in_topic.jsonl",
+    off_topic_path: str = "train_off_topic.jsonl",
 ) -> None:
 
     print(f"Loading {input_path}...")
@@ -107,77 +123,135 @@ def build_training_sets(
                     distilled_map[idx] = assistant
     print(f"  {len(distilled_map)} distilled solutions loaded.")
 
-    train_clean = []
     train_mixed = []
-    train_hard  = []
+    train_noop  = []
+    train_in_topic = []
+    train_off_topic = []
 
-    for i, rec in enumerate(data):
-        question     = rec["question"]
-        gold_answer  = rec["gold_answer"]
-        distractors  = rec["distractors"]
+    # Initialize counters for distribution display
+    mixed_counts = {"clean": 0, "off_topic": 0, "in_topic": 0, "no_op": 0}
+    in_topic_counts  = {"clean": 0, "distracted": 0}
+    off_topic_counts = {"clean": 0, "distracted": 0}
+    noop_counts      = {"clean": 0, "distracted": 0}
 
-        # Use distilled solution if available, else fall back to original
-        solution = distilled_map.get(rec["id"], rec["solution"])
+    # Load distilled solutions as primary list
+    with open(distilled_path, encoding="utf-8") as f:
+        distilled_data = [json.loads(line) for line in f]
 
-        # Clean example (no distractor)
-        clean_ex = to_training_example(question, solution, gold_answer, rec["id"])
-        train_clean.append(clean_ex)
-        train_mixed.append(clean_ex)
-        train_hard.append(clean_ex)
+    # convert original data into dictionary for ID lookup
+    data_lookup = {rec["id"]: rec for rec in data}
 
-        # off_topic variant
-        if distractors.get("off_topic"):
-            q = insert_distractor(question, distractors["off_topic"])
-            train_mixed.append(to_training_example(q, solution, gold_answer, rec["id"]))
+    for i, dist_rec in enumerate(distilled_data):
+        # Get the ID from the distilled record
+        source_id = dist_rec.get("_source_idx")
 
-        # in_topic variant
-        if distractors.get("in_topic"):
-            q = insert_distractor(question, distractors["in_topic"])
-            train_mixed.append(to_training_example(q, solution, gold_answer, rec["id"]))
+        # verify that the ID does exist in original gsm8k
+        if source_id not in data_lookup:
+            continue
 
-        # no_op variant
-        if distractors.get("no_op"):
-            q = insert_distractor(question, distractors["no_op"])
-            ex = to_training_example(q, solution, gold_answer, rec["id"])
-            train_mixed.append(ex)
-            train_hard.append(ex)
+        # Pull the question and distractors from the original data lookup
+        orig_rec    = data_lookup[source_id]
+        question    = orig_rec["question"]
+        gold_answer = orig_rec["gold_answer"]
+        distractors = orig_rec["distractors"]
+
+        # Use distilled solution only
+        solution = distilled_map.get(source_id)
+        if not solution:
+            continue
+
+        # 1. Mixed Set (1/4 of each type)
+        mode = i % 4
+        # map the mode to the specific distractor key
+        mode_keys = {1: "off_topic", 2: "in_topic", 3: "no_op"}
+        # returns None if mode = 0 (clean)
+        dist_key = mode_keys.get(mode)
+
+        # use distractor if there is one
+        if dist_key and distractors.get(dist_key):
+            q_mixed = insert_distractor(question, distractors[dist_key])
+            mixed_counts[dist_key] += 1
+        else:
+            q_mixed = question
+            mixed_counts["clean"] += 1
+        train_mixed.append(to_training_example(q_mixed, solution, gold_answer, source_id))
+
+        # 2. in_topic variant (1/2 clean, 1/2 in)
+        q_in, label_in = get_binary_variant(i, question, distractors, "in_topic")
+        train_in_topic.append(to_training_example(q_in, solution, gold_answer, source_id))
+        in_topic_counts[label_in if label_in == "clean" else "distracted"] += 1
+
+        # 3. off_topic variant (1/2 clean, 1/2 off)
+        q_off, label_off = get_binary_variant(i, question, distractors, "off_topic")
+        train_off_topic.append(to_training_example(q_off, solution, gold_answer, source_id))
+        off_topic_counts[label_off if label_off == "clean" else "distracted"] += 1
+
+        # 4. no_op variant (1/2 clean, 1/2 no-op)
+        q_noop, label_noop = get_binary_variant(i, question, distractors, "no_op")
+        train_noop.append(to_training_example(q_noop, solution, gold_answer, source_id))
+        noop_counts[label_noop if label_noop == "clean" else "distracted"] += 1
+
 
         if (i + 1) % 500 == 0:
             print(f"  processed {i+1}/{len(data)}")
 
     # Save
     for path, dataset in [
-        (clean_path, train_clean),
         (mixed_path, train_mixed),
-        (hard_path,  train_hard),
+        (noop_path,  train_noop),
+        (in_topic_path, train_in_topic),
+        (off_topic_path, train_off_topic)
+
     ]:
         with open(path, "w", encoding="utf-8") as f:
             for record in dataset:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     print(f"\nDone!")
-    print(f"  train_clean.jsonl : {len(train_clean)} examples")
     print(f"  train_mixed.jsonl : {len(train_mixed)} examples")
-    print(f"  train_hard.jsonl  : {len(train_hard)} examples")
+    print(f"  train_noop.jsonl  : {len(train_noop)} examples")
+    print(f"  train_in_topic.jsonl : {len(train_in_topic)} examples")
+    print(f"  train_off_topic.jsonl  : {len(train_off_topic)} examples")
 
-    return train_clean, train_mixed, train_hard
+    # After the loop, print the stats
+    print("\nMixed Dataset Distributions:")
+
+    datasets_stats = [
+        ("Mixed Set", mixed_counts),
+        ("In-Topic Set", in_topic_counts),
+        ("Off-Topic Set", off_topic_counts),
+        ("No-Op Set", noop_counts)
+    ]
+
+    for label, counts in datasets_stats:
+        print(f"\n{label}:")
+        total = sum(counts.values())
+        for dtype, count in counts.items():
+            percentage = (count / total) * 100 if total > 0 else 0
+            print(f"  {dtype:12}: {count} ({percentage:.2f}%)")
+
+    return train_mixed, train_noop, train_in_topic, train_off_topic
 
 
 # ── verify ────────────────────────────────────────────────────────────────────
 
 def verify_training_sets(
-    clean_path: str = "train_clean.jsonl",
     mixed_path: str = "train_mixed.jsonl",
-    hard_path:  str = "train_hard.jsonl",
+    noop_path:  str = "train_noop.jsonl",
+    in_topic_path: str = "train_in_topic.jsonl",
+    off_topic_path: str = "train_off_topic.jsonl",
 ) -> None:
     """
     Verify the three training set JSON files.
     Checks: record counts, message format, no empty content.
     """
+    # The range doesn't really matter anymore since they should all have the same size 
     EXPECTED = {
-        clean_path: (7473,  7473),
-        mixed_path: (28000, 31000),
-        hard_path:  (13000, 16000),
+        mixed_path:     (6300, 6308),
+        noop_path:      (6300, 6308),
+        in_topic_path:  (6300, 6308),
+        off_topic_path: (6300, 6308),
+        
     }
 
     for path, (exp_min, exp_max) in EXPECTED.items():
