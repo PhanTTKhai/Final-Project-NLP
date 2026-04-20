@@ -5,7 +5,7 @@ Prepares evaluation sets used in the paper.
 
 ACTIVE:
   1. GSM-Plus (distractor-insertion subset)  - OOD evaluation
-  2. GSM-DC                                  - OOD evaluation
+  2. GSM-IC                                  - OOD evaluation, random-sampled to 1319 examples
   3. Info-Dense GSM8K subset                 - over-filtering evaluation
 
 TODO:
@@ -13,12 +13,16 @@ TODO:
 """
 
 import json
+import random
 import re
 from datasets import load_dataset
 from pathlib import Path
 
 OUTPUT_DIR = Path("eval_sets")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+TARGET_SIZE = 1319  # matches GSM8K test size
+SEED = 42
 
 ANSWER_PATTERN = re.compile(r"####\s*(-?[\d,]+(?:\.\d+)?)")
 NUMERIC_PATTERN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
@@ -53,11 +57,13 @@ def coerce_to_float(value) -> float | None:
                 pass
     return None
 
+
 def save_jsonl(records: list[dict], output_path: Path) -> None:
     """Save a list of dicts as JSONL."""
     with open(output_path, "w", encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
 
 # ---- Word-form number extraction (for info-dense filter) -------------------
 # Cardinal number words common in GSM8K. Fractional words ('half', 'quarter')
@@ -215,58 +221,89 @@ def prepare_gsm_plus(output_path: Path) -> list[dict]:
     return distractor_subset
 
 
-# ---- 2. GSM-DC -------------------------------------------------------------
+# ---- 2. GSM-IC -------------------------------------------------------------
 
-def prepare_gsm_dc(output_path: Path) -> list[dict]:
+def prepare_gsm_ic(
+    output_path: Path,
+    ic_2step_path: str | Path = "external/GSM-IC_2step.json",
+    ic_mstep_path: str | Path = "external/GSM-IC_mstep.json",
+    target_size: int = TARGET_SIZE,
+    seed: int = SEED,
+) -> list[dict]:
     """
-    Load GSM-DC from HuggingFace.
-    DAG-based math problems with controlled distractor-node injection.
-
-    Paper: Yang et al. 2025 (EMNLP).
-    HuggingFace: YMinglai/GSM-DC-Dataset-Sample (6,300 problems).
+    Load GSM-IC from local JSON files, merge them, and randomly subsample
+    to exactly target_size examples. Sampling is stratified across the two
+    files so the 2-step / m-step balance is preserved.
     """
-    print("Loading GSM-DC...")
-    try:
-        ds = load_dataset("YMinglai/GSM-DC-Dataset-Sample", split="train")
-    except Exception as e:
-        print(f"  [error] Could not load GSM-DC: {e}")
-        print("  Verify dataset name at https://github.com/yminglai/GSM-DC")
-        save_jsonl([], output_path)
-        return []
+    print(f"Loading GSM-IC (target: {target_size} examples)...")
+    paths = [Path(ic_2step_path), Path(ic_mstep_path)]
 
-    print(f"  Total examples: {len(ds)}")
-    print(f"  Columns: {ds.column_names}")
-    print(f"  Sample row (truncated): {str(ds[0])[:500]}...")
+    # Load each file separately so we can stratify
+    per_file_examples: list[list[tuple[str, dict]]] = []
+    for path in paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing GSM-IC file: {path}")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"  {path.name}: {len(data)} raw examples")
+        per_file_examples.append([(path.stem, ex) for ex in data])
 
+    total_raw = sum(len(x) for x in per_file_examples)
+    print(f"  Total raw: {total_raw}")
+
+    if total_raw < target_size:
+        print(f"  [warn] Total raw ({total_raw}) is less than target ({target_size}); "
+              f"using all available.")
+        target_size = total_raw
+
+    # Stratified allocation: proportional quotas per file
+    quotas = [
+        round(len(group) * target_size / total_raw)
+        for group in per_file_examples
+    ]
+    # Adjust for rounding to hit target exactly
+    while sum(quotas) < target_size:
+        idx = max(range(len(per_file_examples)),
+                  key=lambda i: len(per_file_examples[i]))
+        quotas[idx] += 1
+    while sum(quotas) > target_size:
+        idx = max(range(len(quotas)), key=lambda i: quotas[i])
+        quotas[idx] -= 1
+
+    for path, group, quota in zip(paths, per_file_examples, quotas):
+        print(f"  Sampling {quota} from {path.name} ({len(group)} available)")
+
+    # Reproducible sampling
+    rng = random.Random(seed)
+    sampled: list[tuple[str, dict]] = []
+    for group, quota in zip(per_file_examples, quotas):
+        sampled.extend(rng.sample(group, quota))
+
+    # Shuffle combined sample so file-order isn't informative
+    rng.shuffle(sampled)
+
+    # Build records with consistent schema
     records = []
-    for i, ex in enumerate(ds):
-        problem = ex.get("problem_text") or ex.get("problem") or ex.get("question", "")
-        solution = ex.get("solution_text") or ex.get("solution", "")
-        if isinstance(problem, list):
-            problem = " ".join(problem)
-        if isinstance(solution, list):
-            solution = " ".join(solution)
-
-        info = ex.get("problem_info") or {}
-        gold_raw = info.get("final_answer") if isinstance(info, dict) else None
-        if gold_raw is None:
-            gold_raw = ex.get("final_answer") or ex.get("answer")
-
+    for source_stem, ex in sampled:
+        question = ex.get("new_question") or ex.get("question") or ""
+        gold_raw = ex.get("answer")
         gold = coerce_to_float(gold_raw)
 
         records.append({
-            "id": i,
-            "question": problem,
-            "solution": solution,
-            "answer": gold,  # added for evaluate.py
+            "id": len(records),
+            "question": question,
+            "answer": gold_raw,
             "gold_answer": gold,
-            "irrelevant_nodes_count": ex.get("irrelevant_nodes_count"),
+            "source_split": source_stem,
+            "n_steps": ex.get("n_steps"),
+            "original_question": ex.get("original_question"),
         })
 
+    print(f"  GSM-IC final: {len(records)} examples")
+
+    # Quick sanity on gold-answer coverage
     with_gold = sum(1 for r in records if r["gold_answer"] is not None)
-    print(f"  Parsed: {len(records)} examples ({with_gold} with parseable gold answer)")
-    if with_gold < len(records) * 0.9:
-        print(f"  [warn] Low gold-answer coverage. Check printed schema above.")
+    print(f"  With parseable gold_answer: {with_gold}/{len(records)}")
 
     save_jsonl(records, output_path)
     print(f"  Saved -> {output_path}")
@@ -373,11 +410,6 @@ def prepare_info_dense(
     print(f"  Saved -> {output_path}")
     return info_dense
 
-
-# ---- 4. Template-distracted GSM8K test set (TODO) --------------------------
-
-# TODO: Implement after Task #10 (distractor generation) is done.
-
 if __name__ == "__main__":
     print("=" * 60)
     print("Preparing benchmark evaluation sets...")
@@ -386,13 +418,12 @@ if __name__ == "__main__":
     prepare_gsm_plus(OUTPUT_DIR / "gsm_plus_distractor.jsonl")
     print()
 
-    prepare_gsm_dc(OUTPUT_DIR / "gsm_dc.jsonl")
+    prepare_gsm_ic(OUTPUT_DIR / "gsm_ic.jsonl")
     print()
 
     prepare_info_dense(OUTPUT_DIR / "info_dense.jsonl")
     print()
     print("Output files in ./eval_sets/")
     print("  gsm_plus_distractor.jsonl")
-    print("  gsm_dc.jsonl")
+    print("  gsm_ic.jsonl")
     print("  info_dense.jsonl")
-
