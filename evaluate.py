@@ -21,9 +21,7 @@ SYSTEM_PROMPT = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Answer extraction
-# ---------------------------------------------------------------------------
 
 def extract_answer(text: str) -> str | None:
     """Extract the final numerical answer from model output.
@@ -79,9 +77,7 @@ def answers_match(predicted: str | None, gold: str) -> bool:
         return predicted.strip().lower() == gold.strip().lower()
 
 
-# ---------------------------------------------------------------------------
 # Benchmark loaders
-# ---------------------------------------------------------------------------
 
 def load_gsm8k_test() -> list[dict]:
     """Load the standard GSM8K test split from HuggingFace."""
@@ -101,7 +97,7 @@ def load_jsonl_benchmark(path: str, source_name: str) -> list[dict]:
             ex = json.loads(line)
             question = ex.get("question") or ex.get("problem") or ex.get("input", "")
 
-            # Explicitly check each field; 0.0 must not fall through!
+            # Explicitly check each field; 0.0 must not fall through
             gold_raw = None
             for key in ("gold_answer", "answer", "gold", "target", "solution"):
                 if key in ex and ex[key] is not None:
@@ -119,9 +115,7 @@ def load_jsonl_benchmark(path: str, source_name: str) -> list[dict]:
     return examples
 
 
-# ---------------------------------------------------------------------------
 # Generation
-# ---------------------------------------------------------------------------
 
 @torch.inference_mode()
 def generate_batch(
@@ -172,9 +166,7 @@ def format_prompt(tokenizer, question: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
 # Evaluation loop
-# ---------------------------------------------------------------------------
 
 def evaluate_benchmark(
     model,
@@ -217,9 +209,7 @@ def evaluate_benchmark(
     }
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate fine-tuned models on math benchmarks")
@@ -241,7 +231,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (0 = greedy)")
     args = parser.parse_args()
 
-    # ---- Load model ----
+    # Load model
     print(f"Loading model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -256,7 +246,7 @@ def main() -> None:
     )
     model.eval()
 
-    # ---- Load benchmarks ----
+    # Load benchmarks
     all_benchmarks: list[tuple[str, list[dict]]] = []
 
     for spec in args.benchmarks:
@@ -269,7 +259,7 @@ def main() -> None:
             name = Path(spec).stem
             all_benchmarks.append((name, load_jsonl_benchmark(spec, name)))
 
-    # ---- Evaluate ----
+    # Evaluate
     summary = {}
     all_results = {}
 
@@ -297,7 +287,7 @@ def main() -> None:
         print(f"  Accuracy: {metrics['accuracy']:.4f} ({metrics['correct']}/{metrics['total']})")
         print(f"  Time: {elapsed:.1f}s")
 
-    # ---- Summary table ----
+    # Summary table
     print(f"\n{'=' * 60}")
     print("SUMMARY")
     print(f"{'=' * 60}")
@@ -306,7 +296,7 @@ def main() -> None:
     for name, s in summary.items():
         print(f"{name:<20} {s['accuracy']:>10.4f} {s['correct']:>10} {s['total']:>10}")
 
-    # ---- Save results ----
+    # Save results
     if args.output:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
         output_data = {

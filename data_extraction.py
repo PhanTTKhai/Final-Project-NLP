@@ -1,5 +1,4 @@
 """
-Task #9 - NLP for Data Extraction
 Extracts structured info from GSM8K training split:
   - sentences (with role labels)
   - numbers + units
@@ -17,7 +16,7 @@ import re
 import json
 from datasets import load_dataset
 
-# ── optional: spaCy for NER ─────────────────────────────────────────────────
+# optional: spaCy for NER
 try:
     import spacy
     nlp = spacy.load("en_core_web_sm")
@@ -28,11 +27,11 @@ except Exception:
           "Run:  pip install spacy && python -m spacy download en_core_web_sm")
 
 
-# ── regex patterns ───────────────────────────────────────────────────────────
+# regex patterns
 NUMBER_PATTERN = re.compile(
     r"""
     (?<!\w)                        # not preceded by a word char
-    (\d{1,3}(?:,\d{3})*|\d+)      # integer, optionally comma-grouped
+    (\d{1,3}(?:,\d{3})*|\d+)       # integer, optionally comma-grouped
     (?:\.\d+)?                     # optional decimal part
     (?!\w)                         # not followed by a word char
     """,
@@ -119,9 +118,9 @@ def parse_gold_answer(solution: str) -> float | None:
     return None
 
 
-# ── distractor hint extraction ───────────────────────────────────────────────
+# distractor hint extraction
 
-# Common GSM8K topics — used to tag question theme for off-topic distractor gen
+# common GSM8K topics, used to tag question theme for off-topic distractor gen
 TOPIC_KEYWORDS = {
     "money":    r"\b(dollar|cent|price|cost|pay|earn|spend|sale|discount|profit|cheap|expensive|\$)\b",
     "time":     r"\b(hour|minute|second|day|week|month|year|morning|afternoon|evening|schedule)\b",
@@ -242,8 +241,8 @@ def build_distractor_hints(question: str, solution: str, entities: list[dict],
 
     return {
         "off_topic": {
-            "topics":   topics,       # e.g. ["money", "school"] — avoid these in distractor
-            "persons":  persons,      # e.g. ["Natalia"] — can reuse names for naturalness
+            "topics":   topics,       # e.g. ["money", "school"], avoid these in distractor
+            "persons":  persons,      # e.g. ["Natalia"], can reuse names for naturalness
         },
         "in_topic": {
             "numbers":  [n["value"] for n in numbers],   # numbers to swap/perturb
@@ -253,13 +252,12 @@ def build_distractor_hints(question: str, solution: str, entities: list[dict],
         "no_op": {
             "candidates": find_noop_candidates(question, solution),
             # sentences with numbers irrelevant to the solution
-            # → #10 can insert these as distractors directly
+            # can insert these as distractors directly
         },
     }
 
 
-# ── main extraction loop ─────────────────────────────────────────────────────
-
+# main extraction loop
 def extract_gsm8k(split: str = "train", output_path: str = "gsm8k_extracted.json") -> list[dict]:
     print(f"Loading GSM8K ({split} split)...")
     ds = load_dataset("gsm8k", "main", split=split)
@@ -299,8 +297,7 @@ def extract_gsm8k(split: str = "train", output_path: str = "gsm8k_extracted.json
     return records
 
 
-# ── quick sanity check ───────────────────────────────────────────────────────
-
+# quick sanity check
 def print_sample(records: list[dict], n: int = 2) -> None:
     for rec in records[:n]:
         print("=" * 60)

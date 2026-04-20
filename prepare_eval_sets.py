@@ -1,6 +1,4 @@
 """
-Task #5 - Prepare Benchmark Evaluation Sets
-
 Prepares evaluation sets used in the paper.
 
 ACTIVE:
@@ -8,8 +6,7 @@ ACTIVE:
   2. GSM-IC                                  - OOD evaluation, random-sampled to 1319 examples
   3. Info-Dense GSM8K subset                 - over-filtering evaluation
 
-TODO:
-  4. Template-distracted GSM8K test set      - needs Task #10
+
 """
 
 import json
@@ -65,7 +62,7 @@ def save_jsonl(records: list[dict], output_path: Path) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-# ---- Word-form number extraction (for info-dense filter) -------------------
+# Word-form number extraction (for info-dense filter)
 # Cardinal number words common in GSM8K. Fractional words ('half', 'quarter')
 # are intentionally EXCLUDED because they express relations (/2, /4) rather
 # than absolute quantities, and rarely appear literally in solution arithmetic.
@@ -164,7 +161,7 @@ def is_question_sentence(sentence: str) -> bool:
     return s_lower.startswith(interrogative_starts)
 
 
-# ---- 1. GSM-Plus (distractor-insertion subset) -----------------------------
+# 1. GSM-Plus (distractor-insertion subset)
 
 def prepare_gsm_plus(output_path: Path) -> list[dict]:
     """
@@ -221,7 +218,7 @@ def prepare_gsm_plus(output_path: Path) -> list[dict]:
     return distractor_subset
 
 
-# ---- 2. GSM-IC -------------------------------------------------------------
+# 2. GSM-IC
 
 def prepare_gsm_ic(
     output_path: Path,
@@ -310,7 +307,7 @@ def prepare_gsm_ic(
     return records
 
 
-# ---- 3. Info-Dense GSM8K subset --------------------------------------------
+# 3. Info-Dense GSM8K subset
 
 def is_info_dense(
     question: str,

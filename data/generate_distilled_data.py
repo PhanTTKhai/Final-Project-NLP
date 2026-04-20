@@ -32,7 +32,7 @@ SYSTEM_PROMPT = (
 )
 
 
-# ---- answer extraction (copied from evaluate.py for consistency) -----------
+# answer extraction (copied from evaluate.py for consistency)
 
 def extract_answer(text: str) -> str | None:
     """Extract the final numerical answer from model output."""
@@ -75,7 +75,7 @@ def extract_gold_from_gsm8k(answer_text: str) -> str:
     return answer_text.split("####")[-1].replace(",", "").strip()
 
 
-# ---- generation -------------------------------------------------------------
+# generation
 
 def format_prompt(tokenizer, question: str) -> str:
     messages = [
@@ -123,7 +123,7 @@ def generate_batch(
     return responses
 
 
-# ---- main loop --------------------------------------------------------------
+# main loop
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Self-distill GSM8K training data")
@@ -144,7 +144,7 @@ def main() -> None:
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
-    # ---- Load data ----
+    # Load data  
     print(f"Loading GSM8K train split...")
     ds = load_dataset("openai/gsm8k", "main", split="train")
     if args.limit:
@@ -158,7 +158,7 @@ def main() -> None:
         gold = extract_gold_from_gsm8k(row["answer"])
         questions.append({"idx": i, "question": row["question"], "gold": gold})
 
-    # ---- Resume support ----
+    # Resume support  
     already_done: set[int] = set()
     if args.resume and os.path.exists(args.output):
         with open(args.output) as f:
@@ -171,7 +171,7 @@ def main() -> None:
         print(f"  Resuming: {len(already_done)} examples already in {args.output}")
         questions = [q for q in questions if q["idx"] not in already_done]
 
-    # ---- Load model ----
+    # Load model  
     print(f"Loading teacher model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -186,7 +186,7 @@ def main() -> None:
     )
     model.eval()
 
-    # ---- Main loop: for each attempt, batch-generate over unsolved questions ----
+    # Main loop: for each attempt, batch-generate over unsolved questions  
     # Track solved questions; once solved, stop generating for them.
     solved: dict[int, dict] = {}  # idx -> record to write
     unsolved = list(questions)
@@ -248,7 +248,7 @@ def main() -> None:
 
     output_file.close()
 
-    # ---- Summary ----
+    # Summary  
     total_solved = len(solved) + len(already_done)
     elapsed = time.time() - t0
     print(f"\n{'=' * 60}")

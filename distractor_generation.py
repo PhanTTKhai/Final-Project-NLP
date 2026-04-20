@@ -1,7 +1,5 @@
 """
-Task #10 - NLP for Distractor Generation (v4)
-
-Reads gsm8k_extracted.json (output of Task #9) and generates three types
+Reads gsm8k_extracted.json and generates three types
 of distractor sentences for each problem:
   - off_topic:  a sentence unrelated to the problem topic
   - in_topic:   a sentence related to the topic but with a fake number
@@ -9,7 +7,6 @@ of distractor sentences for each problem:
 
 Output: gsm8k_distractors.json
 
-v4 changes (unit-semantic pass):
   - Units are classified into 5 CATEGORIES: count, money, time, distance, weight
   - Templates are GATED by unit category - e.g., "coupon" only applies to
     money/count units, not to miles or minutes
@@ -33,10 +30,7 @@ SEED = 42
 random.seed(SEED)
 
 
-# =============================================================================
-# OFF-TOPIC (unchanged — good per feedback)
-# =============================================================================
-
+# Off-topic (unchanged, good per feedback)
 OFF_TOPIC_BY_DOMAIN = {
     "weather": [
         "The sky was overcast with a light breeze that afternoon.",
@@ -94,10 +88,8 @@ TOPIC_AVOID_DOMAINS = {
 }
 
 
-# =============================================================================
-# UNIT CLASSIFICATION
-# =============================================================================
-# Every unit maps to one category. Templates are selected based on category.
+# Unit classification
+# Every unit maps to one category, templates are selected based on category.
 
 UNIT_CATEGORY = {
     # money
@@ -125,7 +117,7 @@ UNIT_CATEGORY = {
     "l": "weight", "ml": "weight",
     # percent
     "%": "percent",
-    # everything alphabetic and not above -> "count" (apples, clips, books...)
+    # everything alphabetic and not above: "count" (apples, clips, books...)
 }
 
 
@@ -158,9 +150,7 @@ def allow_weight_templates(raw_unit: str | None, topics: list[str], question: st
     return True
 
 
-# -----------------------------------------------------------------------------
 # Phrase builders per category
-# -----------------------------------------------------------------------------
 # Each returns a ready-to-use noun phrase (e.g., "5 kg of flour", "$30",
 # "3 apples", "12 minutes"). Weight units get substance contextualization.
 
@@ -214,7 +204,7 @@ def build_phrase(unit: str, number, category: str) -> str | None:
         return f"{_fmt(number)} {pluralize(u, number)}"
 
     if category == "distance":
-        # Don't pluralize abbreviations like "km"
+        # don't pluralize abbreviations like "km"
         if u in {"km", "cm", "m"}:
             return f"{_fmt(number)} {u}"
         return f"{_fmt(number)} {pluralize(u, number)}"
@@ -233,13 +223,11 @@ def build_phrase(unit: str, number, category: str) -> str | None:
     return None
 
 
-# =============================================================================
-# IN-TOPIC TEMPLATES — gated by unit category
-# =============================================================================
+# In-topic templates, gated by unit category
 # Each category has PERSON templates and NO-PERSON templates.
 # Templates use natural verbs/contexts for that unit type.
 
-# ---- money ----
+# money
 IN_TOPIC_MONEY_PERSON = [
     "{person} had paid {phrase} for a similar purchase last week.",
     "{person} had set aside {phrase} for a different expense.",
@@ -254,7 +242,7 @@ IN_TOPIC_MONEY_NO_PERSON = [
     "The market average that week was around {phrase}.",
 ]
 
-# ---- time ----
+# time  
 IN_TOPIC_TIME_PERSON = [
     "{person} had spent {phrase} on a different task earlier that week.",
     "On another occasion, {person} had taken {phrase} to finish a similar job.",
@@ -268,7 +256,7 @@ IN_TOPIC_TIME_NO_PERSON = [
     "An earlier estimate had put the duration at {phrase}.",
 ]
 
-# ---- distance ----
+# distance 
 IN_TOPIC_DISTANCE_PERSON = [
     "{person} had walked {phrase} on a different outing last week.",
     "On a separate trip, {person} had driven {phrase}.",
@@ -282,7 +270,7 @@ IN_TOPIC_DISTANCE_NO_PERSON = [
     "The alternate path was roughly {phrase}.",
 ]
 
-# ---- weight ----
+# weight
 IN_TOPIC_WEIGHT_PERSON = [
     "{person} had bought {phrase} at a different store that week.",
     "On another trip, {person} had weighed out {phrase} for a separate order.",
@@ -296,7 +284,7 @@ IN_TOPIC_WEIGHT_NO_PERSON = [
     "A parallel order included {phrase} as well.",
 ]
 
-# ---- count ----
+# count
 IN_TOPIC_COUNT_PERSON = [
     "{person} had seen {phrase} at another store that day.",
     "{person} had considered buying {phrase} last week.",
@@ -310,7 +298,7 @@ IN_TOPIC_COUNT_NO_PERSON = [
     "A separate batch contained {phrase} in total.",
 ]
 
-# ---- percent ----
+# percent
 IN_TOPIC_PERCENT = [
     "An earlier survey showed {number}% of respondents agreed.",
     "A recent study found {number}% of participants benefited.",
@@ -319,12 +307,10 @@ IN_TOPIC_PERCENT = [
 ]
 
 
-# =============================================================================
-# NO-OP TEMPLATES — gated by unit category
-# =============================================================================
+# No-op templates, gated by unit category
 # Same category gating. Each template has a hypothetical/historical marker.
 
-# ---- money ----
+# money
 NO_OP_MONEY_PERSON = [
     "A coupon worth {phrase} had been given to {person}, but it had expired.",
     "{person} had been offered a discount of {phrase}, which went unused.",
@@ -339,7 +325,7 @@ NO_OP_MONEY_NO_PERSON = [
     "A past invoice for {phrase} was issued but later voided.",
 ]
 
-# ---- time ----
+# time
 NO_OP_TIME_PERSON = [
     "{person} had originally scheduled {phrase} for this task, but the plan changed.",
     "An earlier estimate gave {person} {phrase}, though that no longer applies.",
@@ -353,7 +339,7 @@ NO_OP_TIME_NO_PERSON = [
     "Had the deadline not shifted, there would have been {phrase} available.",
 ]
 
-# ---- distance ----
+# distance
 NO_OP_DISTANCE_PERSON = [
     "{person} had originally planned to walk {phrase}, but took a shortcut.",
     "An earlier route for {person} covered {phrase}, though it was abandoned.",
@@ -367,7 +353,7 @@ NO_OP_DISTANCE_NO_PERSON = [
     "A previous estimate put the distance at {phrase}, but it no longer applies.",
 ]
 
-# ---- weight ----
+# weight
 NO_OP_WEIGHT_PERSON = [
     "{person} had ordered {phrase} the previous week, but it was returned.",
     "An earlier shipment of {phrase} had been sent to {person}, but was recalled.",
@@ -381,7 +367,7 @@ NO_OP_WEIGHT_NO_PERSON = [
     "A past order for {phrase} was placed but never fulfilled.",
 ]
 
-# ---- count ----
+# count
 NO_OP_COUNT_PERSON = [
     "{person} had owned {phrase} the previous month but sold them.",
     "At an earlier point, {person} had {phrase}, though that was before this.",
@@ -395,7 +381,7 @@ NO_OP_COUNT_NO_PERSON = [
     "Had the order gone through, there would have been {phrase}.",
 ]
 
-# ---- percent ----
+# percent
 NO_OP_PERCENT = [
     "Earlier, a discount of {number}% had been offered, but it had since expired.",
     "A previous survey showed {number}% agreement, though that data is outdated.",
@@ -422,9 +408,7 @@ NO_OP_TEMPLATES = {
 }
 
 
-# =============================================================================
-# PERSON & TOPIC HELPERS
-# =============================================================================
+# PERSON & TOPIC helpers
 
 TOPIC_SUBJECTS = {
     "school":   ["A student", "A classmate", "A teacher"],
@@ -468,9 +452,7 @@ def get_person(persons: list[str], topics: list[str]) -> str | None:
     return None
 
 
-# =============================================================================
-# NUMBER & FILTER HELPERS
-# =============================================================================
+# NUMBER & FILTER helpers
 
 _NUM_RE = re.compile(r"(?<!\w)\d[\d,]*(?:\.\d+)?(?!\w)")
 
@@ -525,7 +507,7 @@ def contains_phrase_from_question(distractor: str, question: str) -> bool:
     return False
 
 
-# Hard reject patterns (safety net; templates should prevent these anyway)
+# Hard reject patterns (safety net, templates should prevent these already)
 REJECT_PATTERNS = [
     re.compile(r"\bitems?\b", re.IGNORECASE),
     re.compile(r"\bthings?\b", re.IGNORECASE),
@@ -541,7 +523,7 @@ REJECT_PATTERNS = [
     re.compile(r"\b(friend|coworker) of\b", re.IGNORECASE),
     re.compile(r"\bkept\b.*\bat home\b", re.IGNORECASE),
     re.compile(r"\b\d+\s*g\s+of\s+(sugar|spice)\b", re.IGNORECASE),
-    # Unit-context mismatch patterns (catch any leaks from old-style templates)
+    # unit-context mismatch patterns (catch any leaks from old-style templates)
     re.compile(r"coupon\s+(worth|for)\s+\d+\s*(minutes?|hours?|days?|weeks?|months?|years?|miles?|km|meters?|m)\b", re.IGNORECASE),
     re.compile(r"\b(received|gift|present)\s+.*\b\d+\s*(minutes?|hours?|miles?|km|kg|g|lbs?|pounds?)\b.*\b(as a gift|as a present)\b", re.IGNORECASE),
     re.compile(r"mentioned\s+having\s+\d+\s*(minutes?|miles?|km|meters?|hours?)\b", re.IGNORECASE),
@@ -580,9 +562,7 @@ def _fmt(n: float) -> str:
     return str(n)
 
 
-# =============================================================================
-# GENERATORS
-# =============================================================================
+# Generators
 
 def generate_off_topic(topics: list[str], question: str, max_retries: int = 10) -> str | None:
     forbidden_domains = set()
@@ -737,9 +717,7 @@ def generate_no_op(
     return None
 
 
-# =============================================================================
-# MAIN LOOP + VERIFY + SAMPLES
-# =============================================================================
+# Main loop + verify + samples
 
 def generate_distractors(
     input_path: str = "gsm8k_extracted.json",

@@ -1,7 +1,5 @@
 """
-Task #4 - Distractor Insertion (v2)
-
-Reads gsm8k_distractors.json (output of Task #10) and builds four training sets
+Reads gsm8k_distractors.json and builds four training sets
 by inserting distractor sentences into questions at a random position.
 
 Output files (all JSONL, chat-formatted for SFT):
@@ -21,7 +19,6 @@ Each record:
     "_distractor_position": 2   # None if clean
   }
 
-Improvements over v1:
   - Robust sentence splitter (handles decimals like 0.5, abbreviations like Mr.)
   - Preserves _distractor_type, _distractor_sentence, _distractor_position
     so downstream analysis (which type helped most, etc.) is possible
@@ -47,9 +44,7 @@ SYSTEM_PROMPT = (
 )
 
 
-# ---- Robust sentence splitter ----------------------------------------------
-# The v1 splitter broke on decimals (0.5 -> [0, 5]) and abbreviations (Mr. -> [Mr, ]).
-# This version protects those before splitting.
+# Sentence splitter
 
 _ABBREV = {"Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "vs", "etc", "e.g", "i.e"}
 _DECIMAL_RE = re.compile(r"(\d)\.(\d)")
@@ -58,21 +53,21 @@ _DECIMAL_RE = re.compile(r"(\d)\.(\d)")
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences, protecting decimals and common abbreviations."""
     protected = text
-    # Protect decimals: 0.5 -> 0_DECIMAL_5
+    # protect decimals: 0.5 -> 0_DECIMAL_5
     protected = _DECIMAL_RE.sub(lambda m: f"{m.group(1)}__DEC__{m.group(2)}", protected)
-    # Protect abbreviations: Mr. -> Mr__DOT__
+    # protect abbreviations: Mr. -> Mr__DOT__
     for abbr in _ABBREV:
         protected = re.sub(rf"\b{abbr}\.", f"{abbr}__DOT__", protected)
 
-    # Split on sentence-ending punctuation followed by whitespace
+    # split on sentence-ending punctuation followed by whitespace
     parts = re.split(r"(?<=[.!?])\s+", protected.strip())
 
-    # Restore protected markers
+    # restore protected markers
     parts = [p.replace("__DOT__", ".").replace("__DEC__", ".") for p in parts]
     return [p.strip() for p in parts if p.strip()]
 
 
-# ---- Insertion -------------------------------------------------------------
+# Insertion
 
 def insert_distractor(question: str, distractor: str) -> tuple[str, int]:
     """
@@ -86,16 +81,16 @@ def insert_distractor(question: str, distractor: str) -> tuple[str, int]:
     sentences = split_sentences(question)
 
     if len(sentences) <= 1:
-        # Short question: insert distractor at the start
+        # short question: insert distractor at the start
         return f"{distractor} {question}", 0
 
-    # Pick a position between 1 (after first) and len-1 (before last)
+    # pick a position between 1 (after first) and len-1 (before last)
     insert_pos = random.randint(1, len(sentences) - 1)
     sentences.insert(insert_pos, distractor)
     return " ".join(sentences), insert_pos
 
 
-# ---- Training record format ------------------------------------------------
+# Training record format
 
 def to_training_example(
     question: str,
@@ -127,7 +122,7 @@ def to_training_example(
     }
 
 
-# ---- Main build loop -------------------------------------------------------
+# Main build loop
 
 
 
@@ -169,7 +164,7 @@ def build_training_sets(
                 distilled_records.append(json.loads(line))
     print(f"  {len(distilled_records)} distilled records loaded.")
 
-    # Keep only source ids that exist in both places and have a distilled solution.
+    # keep only source ids that exist in both places and have a distilled solution.
     solution_by_id: dict[int, str] = {}
     valid_ids: list[int] = []
     seen_ids: set[int] = set()
@@ -292,7 +287,7 @@ def build_training_sets(
             "no_op": [],
         }
 
-        # Allocate the scarcest categories first.
+        # allocate the scarcest categories first.
         order = ["in_topic", "no_op", "off_topic"]
 
         for k in range(max_k, 0, -1):
@@ -373,7 +368,7 @@ def build_training_sets(
             print(f"  {dtype:12}: {count} ({pct:.1f}%)")
 
 
-# ---- Verify ----------------------------------------------------------------
+# Verify
 
 def verify_training_sets(
     mixed_path: str = "train_mixed.jsonl",
@@ -528,7 +523,7 @@ if __name__ == "__main__":
 
     print()
 
-    # Test sets (no clean file; use original GSM8K test directly)
+    # Test sets (no clean file, use original GSM8K test directly)
     build_test_sets(
         input_path="data/distractors/gsm8k_test_distractors.json",
         off_topic_path="test_off_topic.jsonl",

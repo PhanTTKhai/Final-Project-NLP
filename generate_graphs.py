@@ -1,6 +1,4 @@
 """
-Task #12 - Code for Generating Graphs
-
 Generates figures for the paper based on Table 1 results.
 
 TO USE: Replace the placeholder values in RESULTS with actual experiment results.
@@ -24,7 +22,7 @@ matplotlib.rcParams.update({
     "figure.dpi": 150,
 })
 
-# ── REPLACE THESE VALUES WITH ACTUAL RESULTS ─────────────────────────────────
+# Replace these values with actual results later
 # All values are accuracy (%) on each evaluation set.
 # Rows = models, Columns = [GSM8K clean, GSM-Plus, GSM-DC, Template, Info-Dense]
 
@@ -45,8 +43,6 @@ COLORS = {
     "1.5B Clean": "#C44E52",
     "1.5B Mixed": "#8172B2",
 }
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def check_results() -> bool:
@@ -109,7 +105,7 @@ def compute_overfiltering(results: dict) -> dict:
     return overfiltering
 
 
-# ── Figure 1: Accuracy across all evaluation sets ────────────────────────────
+# Figure 1: accuracy across all evaluation sets
 
 def plot_accuracy(results: dict, output_path: str = "fig1_accuracy_by_model.png") -> None:
     """Bar chart showing accuracy of each model on each evaluation set."""
@@ -142,7 +138,7 @@ def plot_accuracy(results: dict, output_path: str = "fig1_accuracy_by_model.png"
     print(f"Saved -> {output_path}")
 
 
-# ── Figure 2: Robustness score ────────────────────────────────────────────────
+# Figure 2: robustness score
 
 def plot_robustness(results: dict, output_path: str = "fig2_robustness_score.png") -> None:
     """
@@ -180,7 +176,7 @@ def plot_robustness(results: dict, output_path: str = "fig2_robustness_score.png
     print(f"Saved -> {output_path}")
 
 
-# ── Figure 3: Over-filtering score ───────────────────────────────────────────
+# Figure 3: over-filtering score
 
 def plot_overfiltering(results: dict, output_path: str = "fig3_overfiltering_score.png") -> None:
     """
@@ -220,7 +216,7 @@ def plot_overfiltering(results: dict, output_path: str = "fig3_overfiltering_sco
     print(f"Saved -> {output_path}")
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# main
 
 if __name__ == "__main__":
     ready = check_results()
