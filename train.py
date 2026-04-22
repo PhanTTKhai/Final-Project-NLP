@@ -15,7 +15,7 @@ SYSTEM_PROMPT = (
     "ignore any irrelevant details."
 )
 
-
+# read jsonl file and format into message structures
 def load_chat_data(data_path: str, val_ratio: float = 0.05) -> tuple[Dataset, Dataset]:
     examples = []
     with open(data_path) as f:

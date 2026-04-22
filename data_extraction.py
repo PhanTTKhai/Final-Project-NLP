@@ -1,3 +1,8 @@
+"""
+Breaks down math problems in the GSM8K into machine-readable components
+through an extraction pipeline using Regex and spaCy.
+
+"""
 import re
 import json
 from datasets import load_dataset
@@ -33,7 +38,7 @@ UNIT_PATTERN = re.compile(
 
 ANSWER_PATTERN = re.compile(r"####\s*(-?[\d,]+(?:\.\d+)?)")
 
-
+# pull data from text:
 def extract_numbers(text: str):
     results = []
     for m in NUMBER_PATTERN.finditer(text):
@@ -57,6 +62,7 @@ def extract_entities(text: str):
     return [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
 
 
+# split & catrgorize sentences:
 def split_sentences(text: str):
     if USE_SPACY:
         doc = nlp(text)
@@ -84,7 +90,7 @@ def parse_gold_answer(solution: str):
             pass
     return None
 
-
+# topic classification:
 TOPIC_KEYWORDS = {
     "money":    r"\b(dollar|cent|price|cost|pay|earn|spend|sale|discount|profit|cheap|expensive|\$)\b",
     "time":     r"\b(hour|minute|second|day|week|month|year|morning|afternoon|evening|schedule)\b",
@@ -104,6 +110,7 @@ def detect_topics(text: str):
     ]
 
 
+# finds all numbers used within the solution
 def extract_solution_numbers(solution: str):
     sol_text = solution.split("####")[0]
     used = set()
@@ -114,7 +121,7 @@ def extract_solution_numbers(solution: str):
             pass
     return used
 
-
+# finds questions that contains numbers unused in the solution
 def find_noop_candidates(question: str, solution: str):
     used_numbers = extract_solution_numbers(solution)
     candidates = []
@@ -193,6 +200,7 @@ def build_distractor_hints(question: str, solution: str, entities: list[dict],
     }
 
 
+# main pipeline to load, process & validate
 def extract_gsm8k(split: str = "train", output_path: str = "gsm8k_extracted.json"):
     print(f"Loading GSM8K ({split} split)...")
     ds = load_dataset("gsm8k", "main", split=split)

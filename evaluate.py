@@ -43,7 +43,7 @@ def extract_answer(text: str):
 
     return None
 
-
+# standardize answers for comparison
 def normalize_answer(answer):
     s = str(answer).replace(",", "").strip().rstrip(".")
     s = re.sub(r"^#+\s*", "", s)
@@ -197,7 +197,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (0 = greedy)")
     args = parser.parse_args()
 
-    # Load model
+    # model & tokenizer setup
     print(f"Loading model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -252,6 +252,7 @@ def main():
         print(f"  Time: {elapsed:.1f}s")
 
 
+    # printout summary table
     print(f"{'Benchmark':<20} {'Accuracy':>10} {'Correct':>10} {'Total':>10}")
 
     for name, s in summary.items():

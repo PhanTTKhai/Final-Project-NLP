@@ -54,6 +54,7 @@ def save_jsonl(records: list[dict], output_path: Path):
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+# mappings from written numbers to numeric values
 _ONES = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -75,7 +76,7 @@ _WORD_NUM_RE = re.compile(
 _DIGIT_NUM_RE = re.compile(r"(?<!\w)\d[\d,]*(?:\.\d+)?(?!\w)")
 _ABBREV = {"Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr"}
 
-
+# translates word phrases to numerical values
 def _parse_word_number(phrase: str):
     tokens = re.split(r"[-\s]+", phrase.lower())
     tokens = [t for t in tokens if t and t not in {"and"}]
@@ -130,7 +131,7 @@ def split_sentences(text: str):
     parts = re.split(r"(?<=[.!?])\s+", protected.strip())
     return [p.replace("__DOT__", ".") for p in parts if p.strip()]
 
-
+# identifies if a sentence is the actual prompt question
 def is_question_sentence(sentence: str):
     s = sentence.strip()
     if s.endswith("?"):

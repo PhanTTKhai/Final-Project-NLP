@@ -14,7 +14,7 @@ import re
 SEED = 42
 random.seed(SEED)
 
-
+# sentences used for off_topic distractors
 OFF_TOPIC_BY_DOMAIN = {
     "weather": [
         "The sky was overcast with a light breeze that afternoon.",
@@ -71,7 +71,7 @@ TOPIC_AVOID_DOMAINS = {
     "food":     {"household", "event"},
 }
 
-
+# map units to broader categories
 UNIT_CATEGORY = {
     # money
     "dollar": "money", "dollars": "money",
@@ -126,7 +126,7 @@ def allow_weight_templates(raw_unit, topics: list[str], question: str):
         return False
     return True
 
-
+# items that make weight related distractor seem more realistic
 WEIGHT_SUBSTANCES = {
     "kg":      ["flour", "rice", "feed", "produce", "grain"],
     "g":       ["coffee", "tea", "herbs", "cocoa"],
@@ -140,7 +140,7 @@ WEIGHT_SUBSTANCES = {
     "pounds":  ["flour", "potatoes", "produce"],
 }
 
-
+# pluralize or singularize units given the number
 def pluralize(word: str, n):
     try:
         n_val = float(n)
@@ -163,7 +163,7 @@ def pluralize(word: str, n):
         return word + "es"
     return word + "s"
 
-
+# combine number and unit into readable string
 def build_phrase(unit: str, number, category: str):
     u = unit.strip().lower()
 
@@ -192,7 +192,7 @@ def build_phrase(unit: str, number, category: str):
 
     return None
 
-
+# sentences for in-topic & no-op
 IN_TOPIC_MONEY_PERSON = [
     "{person} had paid {phrase} for a similar purchase last week.",
     "{person} had set aside {phrase} for a different expense.",
@@ -357,7 +357,7 @@ NO_OP_TEMPLATES = {
     "count":    (NO_OP_COUNT_PERSON, NO_OP_COUNT_NO_PERSON),
 }
 
-
+# generic subjects to be used if no names found in problem
 TOPIC_SUBJECTS = {
     "school":   ["A student", "A classmate", "A teacher"],
     "shopping": ["A customer", "A shopper", "A passerby"],
@@ -377,7 +377,7 @@ PERSON_REJECT = {
     "Mr", "Mrs", "Ms", "Dr", "Jr", "Sr",
 }
 
-
+# filters out bad names
 def is_good_person(name: str):
     if not name or len(name) < 3:
         return False
@@ -403,6 +403,7 @@ def get_person(persons: list[str], topics: list[str]):
 _NUM_RE = re.compile(r"(?<!\w)\d[\d,]*(?:\.\d+)?(?!\w)")
 
 
+# extract numbers and return as set of floats
 def _get_numbers(text: str):
     nums: set[float] = set()
     for m in _NUM_RE.finditer(text):
@@ -452,7 +453,7 @@ def contains_phrase_from_question(distractor: str, question: str):
             return True
     return False
 
-
+# poorly generated sentence patterns to reject
 REJECT_PATTERNS = [
     re.compile(r"\bitems?\b", re.IGNORECASE),
     re.compile(r"\bthings?\b", re.IGNORECASE),
@@ -505,7 +506,7 @@ def _fmt(n: float):
         return str(int(n))
     return str(n)
 
-
+# pick a sentence about an unrelated subject
 def generate_off_topic(topics: list[str], question: str, max_retries: int = 10):
     forbidden_domains = set()
     for t in topics:
@@ -655,6 +656,7 @@ def generate_no_op(
             return candidate
     return None
 
+# generates and saves distractors to new file
 def generate_distractors(
     input_path: str = "gsm8k_extracted.json",
     output_path: str = "gsm8k_distractors.json",
@@ -753,6 +755,7 @@ def verify(records: list[dict]) -> None:
     else:
         print("All checks passed!")
 
+# run script for both training & testing
 def generate_for_both_splits() -> None:
     train_records = generate_distractors(
         input_path="gsm8k_train_extracted.json",

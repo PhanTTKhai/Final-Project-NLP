@@ -24,6 +24,7 @@ _ABBREV = {"Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "vs", "etc", "e.g", "i.e"}
 _DECIMAL_RE = re.compile(r"(\d)\.(\d)")
 
 
+# split text into sentences, preserving decimals & abbreviations
 def split_sentences(text: str):
     protected = text
     protected = _DECIMAL_RE.sub(lambda m: f"{m.group(1)}__DEC__{m.group(2)}", protected)
@@ -36,6 +37,7 @@ def split_sentences(text: str):
     return [p.strip() for p in parts if p.strip()]
 
 
+# insert a distractor at a random spot in the question
 def insert_distractor(question: str, distractor: str):
     sentences = split_sentences(question)
 
@@ -46,7 +48,7 @@ def insert_distractor(question: str, distractor: str):
     sentences.insert(insert_pos, distractor)
     return " ".join(sentences), insert_pos
 
-
+# format data into training example
 def to_training_example(
     question: str,
     solution: str,
