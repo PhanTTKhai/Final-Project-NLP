@@ -1,14 +1,6 @@
 """Self-distillation: use base Qwen2.5-Instruct to regenerate GSM8K training
 solutions in its natural verbose style, keep only the correct ones, and write
 them as chat-format JSONL ready for train.py.
-
-Method: Rejection-sampling fine-tuning (RFT) / self-distillation.
-  1. For each train question, generate up to N attempts (1 greedy + N-1 sampled).
-  2. Extract the predicted answer from each attempt.
-  3. Keep the first attempt that matches the gold answer.
-  4. Save as chat-format JSONL with the new verbose solution as the assistant turn.
-
-Output: data/gsm8k_train_distilled.jsonl (chat format, drop-in for train.py).
 """
 from __future__ import annotations
 
@@ -31,30 +23,23 @@ SYSTEM_PROMPT = (
     "ignore any irrelevant details."
 )
 
-
-# answer extraction (copied from evaluate.py for consistency)
-
 def extract_answer(text: str) -> str | None:
     """Extract the final numerical answer from model output."""
     def _clean(num_str: str) -> str:
         return num_str.replace(",", "").strip().rstrip(".")
 
-    # Pattern 1: #### <number>
     m = re.search(r"####\s*([+-]?[\d,]+\.?\d*)", text)
     if m:
         return _clean(m.group(1))
 
-    # Pattern 2: "the answer is <number>"
     m = re.search(r"(?:the\s+)?answer\s+is[:\s]*([+-]?[\d,]+\.?\d*)", text, re.IGNORECASE)
     if m:
         return _clean(m.group(1))
 
-    # Pattern 3: \boxed{<number>}
     m = re.search(r"\\boxed\{([+-]?[\d,]+\.?\d*)\}", text)
     if m:
         return _clean(m.group(1))
 
-    # Fallback: last number in text
     nums = re.findall(r"[+-]?[\d,]+\.?\d*", text)
     if nums:
         return _clean(nums[-1])
@@ -74,8 +59,6 @@ def extract_gold_from_gsm8k(answer_text: str) -> str:
     """GSM8K gold answers end in '#### <number>'."""
     return answer_text.split("####")[-1].replace(",", "").strip()
 
-
-# generation
 
 def format_prompt(tokenizer, question: str) -> str:
     messages = [
@@ -122,9 +105,6 @@ def generate_batch(
         responses.append(tokenizer.decode(response_ids, skip_special_tokens=True))
     return responses
 
-
-# main loop
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Self-distill GSM8K training data")
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
@@ -144,8 +124,6 @@ def main() -> None:
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
-    # Load data  
-    print(f"Loading GSM8K train split...")
     ds = load_dataset("openai/gsm8k", "main", split="train")
     if args.limit:
         ds = ds.select(range(args.limit))
@@ -158,7 +136,6 @@ def main() -> None:
         gold = extract_gold_from_gsm8k(row["answer"])
         questions.append({"idx": i, "question": row["question"], "gold": gold})
 
-    # Resume support  
     already_done: set[int] = set()
     if args.resume and os.path.exists(args.output):
         with open(args.output) as f:
@@ -171,8 +148,6 @@ def main() -> None:
         print(f"  Resuming: {len(already_done)} examples already in {args.output}")
         questions = [q for q in questions if q["idx"] not in already_done]
 
-    # Load model  
-    print(f"Loading teacher model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -186,17 +161,12 @@ def main() -> None:
     )
     model.eval()
 
-    # Main loop: for each attempt, batch-generate over unsolved questions  
-    # Track solved questions; once solved, stop generating for them.
-    solved: dict[int, dict] = {}  # idx -> record to write
+    solved: dict[int, dict] = {}
     unsolved = list(questions)
 
-    # Open output in append mode so we stream results
     output_file = open(args.output, "a", encoding="utf-8")
 
     total_attempts_made = 0
-    t0 = time.time()
-
     for attempt_num in range(args.attempts_per_question):
         if not unsolved:
             break
@@ -221,7 +191,6 @@ def main() -> None:
             for q, response in zip(batch, responses):
                 predicted = extract_answer(response)
                 if answers_match(predicted, q["gold"]):
-                    # Build chat-format record, matching download_data.py schema
                     record = {
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
@@ -240,7 +209,6 @@ def main() -> None:
             pbar.set_postfix(solved_this_attempt=newly_solved,
                              total_solved=len(solved) + len(already_done))
 
-        # Rebuild unsolved list
         unsolved = [q for q in unsolved if q["idx"] not in solved]
         elapsed = time.time() - t0
         print(f"  Attempt {attempt_num + 1}: solved {newly_solved} new, "
@@ -248,20 +216,12 @@ def main() -> None:
 
     output_file.close()
 
-    # Summary  
     total_solved = len(solved) + len(already_done)
-    elapsed = time.time() - t0
-    print(f"\n{'=' * 60}")
-    print(f"DONE in {elapsed/60:.1f} min")
-    print(f"{'=' * 60}")
     print(f"  Questions processed:     {total}")
     print(f"  Solved:                  {total_solved} ({100 * total_solved / total:.1f}%)")
     print(f"  Unsolved (discarded):    {len(unsolved)}")
     print(f"  Total generation calls:  {total_attempts_made}")
     print(f"  Output:                  {args.output}")
-    print()
-    print(f"Next step: train.py --data {args.output}")
-
 
 if __name__ == "__main__":
     main()

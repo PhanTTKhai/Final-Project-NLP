@@ -4,21 +4,6 @@ of distractor sentences for each problem:
   - off_topic:  a sentence unrelated to the problem topic
   - in_topic:   a sentence related to the topic but with a fake number
   - no_op:      a sentence that looks computationally relevant but isn't
-
-Output: gsm8k_distractors.json
-
-  - Units are classified into 5 CATEGORIES: count, money, time, distance, weight
-  - Templates are GATED by unit category - e.g., "coupon" only applies to
-    money/count units, not to miles or minutes
-  - Each category has its own pool of natural verbs and contexts:
-      count:    bought, kept, counted, had on hand
-      money:    coupon, discount, refund, spent
-      time:     scheduled, spent, took, lasted
-      distance: traveled, walked, drove, covered
-      weight:   bought, measured, weighed, ordered
-  - Removed the pan-generic templates ("received as a gift", "mentioned
-    having") because they don't work across all unit types
-  - Hard reject filter extended with unit-context mismatches as backup
 """
 from __future__ import annotations
 
@@ -30,7 +15,6 @@ SEED = 42
 random.seed(SEED)
 
 
-# Off-topic (unchanged, good per feedback)
 OFF_TOPIC_BY_DOMAIN = {
     "weather": [
         "The sky was overcast with a light breeze that afternoon.",
@@ -88,9 +72,6 @@ TOPIC_AVOID_DOMAINS = {
 }
 
 
-# Unit classification
-# Every unit maps to one category, templates are selected based on category.
-
 UNIT_CATEGORY = {
     # money
     "dollar": "money", "dollars": "money",
@@ -117,24 +98,21 @@ UNIT_CATEGORY = {
     "l": "weight", "ml": "weight",
     # percent
     "%": "percent",
-    # everything alphabetic and not above: "count" (apples, clips, books...)
 }
 
 
-def classify_unit(unit: str) -> str | None:
-    """Return category string or None if we can't classify."""
+def classify_unit(unit: str):
     if not unit:
         return None
     u = unit.strip().lower()
     if u in UNIT_CATEGORY:
         return UNIT_CATEGORY[u]
-    # Alphabetic, length 3+ => treat as count noun
     if u.isalpha() and len(u) >= 3:
         return "count"
     return None
 
 
-def allow_weight_templates(raw_unit: str | None, topics: list[str], question: str) -> bool:
+def allow_weight_templates(raw_unit, topics: list[str], question: str):
     if not raw_unit:
         return False
     u = raw_unit.strip().lower()
@@ -144,15 +122,10 @@ def allow_weight_templates(raw_unit: str | None, topics: list[str], question: st
         return True
     if any(t in {"food", "shopping", "nature"} for t in topics):
         return True
-    # tiny cooking-style weights are too easy to make awkward outside relevant domains
     if u in {"g", "mg", "ml"}:
         return False
     return True
 
-
-# Phrase builders per category
-# Each returns a ready-to-use noun phrase (e.g., "5 kg of flour", "$30",
-# "3 apples", "12 minutes"). Weight units get substance contextualization.
 
 WEIGHT_SUBSTANCES = {
     "kg":      ["flour", "rice", "feed", "produce", "grain"],
@@ -168,7 +141,7 @@ WEIGHT_SUBSTANCES = {
 }
 
 
-def pluralize(word: str, n) -> str:
+def pluralize(word: str, n):
     try:
         n_val = float(n)
     except (TypeError, ValueError):
@@ -191,8 +164,7 @@ def pluralize(word: str, n) -> str:
     return word + "s"
 
 
-def build_phrase(unit: str, number, category: str) -> str | None:
-    """Build a ready-to-insert noun phrase given a unit and number."""
+def build_phrase(unit: str, number, category: str):
     u = unit.strip().lower()
 
     if category == "money":
@@ -204,7 +176,6 @@ def build_phrase(unit: str, number, category: str) -> str | None:
         return f"{_fmt(number)} {pluralize(u, number)}"
 
     if category == "distance":
-        # don't pluralize abbreviations like "km"
         if u in {"km", "cm", "m"}:
             return f"{_fmt(number)} {u}"
         return f"{_fmt(number)} {pluralize(u, number)}"
@@ -214,20 +185,14 @@ def build_phrase(unit: str, number, category: str) -> str | None:
         if substances:
             subst = random.choice(substances)
             return f"{_fmt(number)} {u} of {subst}"
-        return None  # no substance -> can't form natural phrase
+        return None
 
     if category == "count":
         return f"{_fmt(number)} {pluralize(u, number)}"
 
-    # percent has no phrase form; caller handles it separately
     return None
 
 
-# In-topic templates, gated by unit category
-# Each category has PERSON templates and NO-PERSON templates.
-# Templates use natural verbs/contexts for that unit type.
-
-# money
 IN_TOPIC_MONEY_PERSON = [
     "{person} had paid {phrase} for a similar purchase last week.",
     "{person} had set aside {phrase} for a different expense.",
@@ -242,7 +207,6 @@ IN_TOPIC_MONEY_NO_PERSON = [
     "The market average that week was around {phrase}.",
 ]
 
-# time  
 IN_TOPIC_TIME_PERSON = [
     "{person} had spent {phrase} on a different task earlier that week.",
     "On another occasion, {person} had taken {phrase} to finish a similar job.",
@@ -256,7 +220,6 @@ IN_TOPIC_TIME_NO_PERSON = [
     "An earlier estimate had put the duration at {phrase}.",
 ]
 
-# distance 
 IN_TOPIC_DISTANCE_PERSON = [
     "{person} had walked {phrase} on a different outing last week.",
     "On a separate trip, {person} had driven {phrase}.",
@@ -270,7 +233,6 @@ IN_TOPIC_DISTANCE_NO_PERSON = [
     "The alternate path was roughly {phrase}.",
 ]
 
-# weight
 IN_TOPIC_WEIGHT_PERSON = [
     "{person} had bought {phrase} at a different store that week.",
     "On another trip, {person} had weighed out {phrase} for a separate order.",
@@ -284,7 +246,6 @@ IN_TOPIC_WEIGHT_NO_PERSON = [
     "A parallel order included {phrase} as well.",
 ]
 
-# count
 IN_TOPIC_COUNT_PERSON = [
     "{person} had seen {phrase} at another store that day.",
     "{person} had considered buying {phrase} last week.",
@@ -298,7 +259,6 @@ IN_TOPIC_COUNT_NO_PERSON = [
     "A separate batch contained {phrase} in total.",
 ]
 
-# percent
 IN_TOPIC_PERCENT = [
     "An earlier survey showed {number}% of respondents agreed.",
     "A recent study found {number}% of participants benefited.",
@@ -307,10 +267,6 @@ IN_TOPIC_PERCENT = [
 ]
 
 
-# No-op templates, gated by unit category
-# Same category gating. Each template has a hypothetical/historical marker.
-
-# money
 NO_OP_MONEY_PERSON = [
     "A coupon worth {phrase} had been given to {person}, but it had expired.",
     "{person} had been offered a discount of {phrase}, which went unused.",
@@ -325,7 +281,6 @@ NO_OP_MONEY_NO_PERSON = [
     "A past invoice for {phrase} was issued but later voided.",
 ]
 
-# time
 NO_OP_TIME_PERSON = [
     "{person} had originally scheduled {phrase} for this task, but the plan changed.",
     "An earlier estimate gave {person} {phrase}, though that no longer applies.",
@@ -339,7 +294,6 @@ NO_OP_TIME_NO_PERSON = [
     "Had the deadline not shifted, there would have been {phrase} available.",
 ]
 
-# distance
 NO_OP_DISTANCE_PERSON = [
     "{person} had originally planned to walk {phrase}, but took a shortcut.",
     "An earlier route for {person} covered {phrase}, though it was abandoned.",
@@ -353,7 +307,6 @@ NO_OP_DISTANCE_NO_PERSON = [
     "A previous estimate put the distance at {phrase}, but it no longer applies.",
 ]
 
-# weight
 NO_OP_WEIGHT_PERSON = [
     "{person} had ordered {phrase} the previous week, but it was returned.",
     "An earlier shipment of {phrase} had been sent to {person}, but was recalled.",
@@ -367,7 +320,6 @@ NO_OP_WEIGHT_NO_PERSON = [
     "A past order for {phrase} was placed but never fulfilled.",
 ]
 
-# count
 NO_OP_COUNT_PERSON = [
     "{person} had owned {phrase} the previous month but sold them.",
     "At an earlier point, {person} had {phrase}, though that was before this.",
@@ -381,7 +333,6 @@ NO_OP_COUNT_NO_PERSON = [
     "Had the order gone through, there would have been {phrase}.",
 ]
 
-# percent
 NO_OP_PERCENT = [
     "Earlier, a discount of {number}% had been offered, but it had since expired.",
     "A previous survey showed {number}% agreement, though that data is outdated.",
@@ -390,7 +341,6 @@ NO_OP_PERCENT = [
 ]
 
 
-# Bundle per-category lookup
 IN_TOPIC_TEMPLATES = {
     "money":    (IN_TOPIC_MONEY_PERSON, IN_TOPIC_MONEY_NO_PERSON),
     "time":     (IN_TOPIC_TIME_PERSON, IN_TOPIC_TIME_NO_PERSON),
@@ -407,8 +357,6 @@ NO_OP_TEMPLATES = {
     "count":    (NO_OP_COUNT_PERSON, NO_OP_COUNT_NO_PERSON),
 }
 
-
-# PERSON & TOPIC helpers
 
 TOPIC_SUBJECTS = {
     "school":   ["A student", "A classmate", "A teacher"],
@@ -430,7 +378,7 @@ PERSON_REJECT = {
 }
 
 
-def is_good_person(name: str) -> bool:
+def is_good_person(name: str):
     if not name or len(name) < 3:
         return False
     if name in PERSON_REJECT:
@@ -442,7 +390,7 @@ def is_good_person(name: str) -> bool:
     return True
 
 
-def get_person(persons: list[str], topics: list[str]) -> str | None:
+def get_person(persons: list[str], topics: list[str]):
     good_names = [p for p in persons if is_good_person(p)]
     if good_names:
         return random.choice(good_names)
@@ -452,12 +400,10 @@ def get_person(persons: list[str], topics: list[str]) -> str | None:
     return None
 
 
-# NUMBER & FILTER helpers
-
 _NUM_RE = re.compile(r"(?<!\w)\d[\d,]*(?:\.\d+)?(?!\w)")
 
 
-def _get_numbers(text: str) -> set[float]:
+def _get_numbers(text: str):
     nums: set[float] = set()
     for m in _NUM_RE.finditer(text):
         try:
@@ -467,18 +413,18 @@ def _get_numbers(text: str) -> set[float]:
     return nums
 
 
-def extract_solution_numbers(solution: str) -> set[float]:
+def extract_solution_numbers(solution: str):
     return _get_numbers(solution.split("####")[0])
 
 
-def extract_question_only_numbers(question: str, solution: str) -> list[float]:
+def extract_question_only_numbers(question: str, solution: str):
     q_nums = _get_numbers(question)
     sol_nums = extract_solution_numbers(solution)
     unused = list(q_nums - sol_nums)
     return unused if unused else list(q_nums)
 
 
-def generate_fake_number(original: float, forbidden: set[float]) -> float:
+def generate_fake_number(original: float, forbidden: set[float]):
     if original == int(original):
         base = int(original)
         for _ in range(20):
@@ -497,7 +443,7 @@ def generate_fake_number(original: float, forbidden: set[float]) -> float:
         return round(original + 10 ** (-decimals) * 3, decimals)
 
 
-def contains_phrase_from_question(distractor: str, question: str) -> bool:
+def contains_phrase_from_question(distractor: str, question: str):
     d_tokens = distractor.lower().split()
     q_lower = question.lower()
     for i in range(len(d_tokens) - 5):
@@ -507,7 +453,6 @@ def contains_phrase_from_question(distractor: str, question: str) -> bool:
     return False
 
 
-# Hard reject patterns (safety net, templates should prevent these already)
 REJECT_PATTERNS = [
     re.compile(r"\bitems?\b", re.IGNORECASE),
     re.compile(r"\bthings?\b", re.IGNORECASE),
@@ -523,14 +468,13 @@ REJECT_PATTERNS = [
     re.compile(r"\b(friend|coworker) of\b", re.IGNORECASE),
     re.compile(r"\bkept\b.*\bat home\b", re.IGNORECASE),
     re.compile(r"\b\d+\s*g\s+of\s+(sugar|spice)\b", re.IGNORECASE),
-    # unit-context mismatch patterns (catch any leaks from old-style templates)
     re.compile(r"coupon\s+(worth|for)\s+\d+\s*(minutes?|hours?|days?|weeks?|months?|years?|miles?|km|meters?|m)\b", re.IGNORECASE),
     re.compile(r"\b(received|gift|present)\s+.*\b\d+\s*(minutes?|hours?|miles?|km|kg|g|lbs?|pounds?)\b.*\b(as a gift|as a present)\b", re.IGNORECASE),
     re.compile(r"mentioned\s+having\s+\d+\s*(minutes?|miles?|km|meters?|hours?)\b", re.IGNORECASE),
 ]
 
 
-def passes_reject_filter(distractor: str) -> bool:
+def passes_reject_filter(distractor: str):
     for pat in REJECT_PATTERNS:
         if pat.search(distractor):
             return False
@@ -542,7 +486,7 @@ def passes_filters(
     forbidden_numbers: set[float],
     question: str,
     min_words: int = 5,
-) -> bool:
+):
     if not distractor:
         return False
     if len(distractor.split()) < min_words:
@@ -556,15 +500,13 @@ def passes_filters(
     return True
 
 
-def _fmt(n: float) -> str:
+def _fmt(n: float):
     if n == int(n):
         return str(int(n))
     return str(n)
 
 
-# Generators
-
-def generate_off_topic(topics: list[str], question: str, max_retries: int = 10) -> str | None:
+def generate_off_topic(topics: list[str], question: str, max_retries: int = 10):
     forbidden_domains = set()
     for t in topics:
         forbidden_domains.update(TOPIC_AVOID_DOMAINS.get(t, set()))
@@ -584,11 +526,10 @@ def generate_off_topic(topics: list[str], question: str, max_retries: int = 10) 
 
 def _render_by_category(
     category: str,
-    templates_bundle: dict,   # IN_TOPIC_TEMPLATES or NO_OP_TEMPLATES
+    templates_bundle: dict,
     phrase: str,
-    person: str | None,
-) -> str | None:
-    """Pick a template for this category and render it."""
+    person,
+):
     if category not in templates_bundle:
         return None
     person_tpls, no_person_tpls = templates_bundle[category]
@@ -602,11 +543,11 @@ def _render_by_category(
 def generate_in_topic(
     hints: dict,
     topics: list[str],
-    gold_answer: float | None,
+    gold_answer,
     question: str,
     solution: str,
     max_retries: int = 15,
-) -> str | None:
+):
     numbers = hints.get("numbers", [])
     if not numbers:
         return None
@@ -626,7 +567,6 @@ def generate_in_topic(
     if category == "weight" and not allow_weight_templates(raw_unit, topics, question):
         return None
 
-    # Percent special case
     if category == "weight" and not allow_weight_templates(raw_unit, topics, question):
         return None
 
@@ -641,9 +581,8 @@ def generate_in_topic(
                 return candidate
         return None
 
-    # All other categories require a buildable phrase
     if category is None:
-        return None  # unknown unit, don't guess
+        return None
 
     for _ in range(max_retries):
         seed_num = random.choice(pool)
@@ -669,7 +608,7 @@ def generate_no_op(
     question: str,
     solution: str,
     max_retries: int = 15,
-) -> str | None:
+):
     numbers = hints.get("numbers", [])
     if not numbers:
         return None
@@ -716,18 +655,12 @@ def generate_no_op(
             return candidate
     return None
 
-
-# Main loop + verify + samples
-
 def generate_distractors(
     input_path: str = "gsm8k_extracted.json",
     output_path: str = "gsm8k_distractors.json",
-) -> list[dict]:
-    print(f"Loading {input_path}...")
+):
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
-    print(f"  {len(data)} records loaded.")
-
     records = []
     fail_counts = {"off_topic": 0, "in_topic": 0, "no_op": 0}
 
@@ -768,7 +701,6 @@ def generate_distractors(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
-    print(f"\nDone! Saved {len(records)} records -> {output_path}")
     print(f"Coverage:")
     for dtype in ("off_topic", "in_topic", "no_op"):
         filled = sum(1 for r in records if r["distractors"][dtype])
@@ -791,7 +723,6 @@ def verify(records: list[dict]) -> None:
     for rec in records:
         id_ = rec["id"]
         dist = rec["distractors"]
-        question = rec["question"]
         gold = rec.get("gold_answer")
         sol_nums = extract_solution_numbers(rec["solution"])
 
@@ -822,37 +753,18 @@ def verify(records: list[dict]) -> None:
     else:
         print("All checks passed!")
 
-
-def show_samples(records: list[dict], n: int = 8) -> None:
-    complete = [r for r in records if all(r["distractors"].values())]
-    pool = complete if len(complete) >= n else records
-    samples = random.sample(pool, min(n, len(pool)))
-    print(f"\n{'=' * 70}")
-    print(f"{n} RANDOM SAMPLES (all 3 distractors filled):")
-    print(f"{'=' * 70}")
-    for rec in samples:
-        print(f"\n--- id={rec['id']} (gold={rec['gold_answer']}) ---")
-        print(f"Q: {rec['question'][:250]}")
-        for dtype, d in rec["distractors"].items():
-            print(f"  [{dtype:10}] {d}")
-
-
 def generate_for_both_splits() -> None:
-    print("\n=== Generating distractors for TRAIN split ===")
     train_records = generate_distractors(
         input_path="gsm8k_train_extracted.json",
         output_path="gsm8k_train_distractors.json",
     )
     verify(train_records)
-    show_samples(train_records, n=10)
 
-    print("\n=== Generating distractors for TEST split ===")
     test_records = generate_distractors(
         input_path="gsm8k_test_extracted.json",
         output_path="gsm8k_test_distractors.json",
     )
     verify(test_records)
-    show_samples(test_records, n=10)
 
 
 if __name__ == "__main__":

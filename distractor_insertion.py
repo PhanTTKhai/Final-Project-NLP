@@ -1,30 +1,6 @@
 """
 Reads gsm8k_distractors.json and builds four training sets
 by inserting distractor sentences into questions at a random position.
-
-Output files (all JSONL, chat-formatted for SFT):
-  - train_mixed.jsonl      : 1/4 clean, 1/4 off_topic, 1/4 in_topic, 1/4 no_op
-  - train_in_topic.jsonl   : 1/2 clean, 1/2 in_topic
-  - train_off_topic.jsonl  : 1/2 clean, 1/2 off_topic
-  - train_noop.jsonl       : 1/2 clean, 1/2 no_op
-
-Each record:
-  {
-    "messages": [system, user, assistant],
-    "_gold_answer": "72",
-    "_source_idx": 12,
-    "_attempt": 1,
-    "_distractor_type": "clean" | "off_topic" | "in_topic" | "no_op",
-    "_distractor_sentence": "the inserted sentence" | null,
-    "_distractor_position": 2   # None if clean
-  }
-
-  - Robust sentence splitter (handles decimals like 0.5, abbreviations like Mr.)
-  - Preserves _distractor_type, _distractor_sentence, _distractor_position
-    so downstream analysis (which type helped most, etc.) is possible
-  - Explicit seeding for reproducibility
-  - Stricter fallback: if distractor is missing for a chosen type, we skip
-    that variant rather than silently using the clean question
 """
 from __future__ import annotations
 
@@ -44,53 +20,32 @@ SYSTEM_PROMPT = (
 )
 
 
-# Sentence splitter
-
 _ABBREV = {"Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "vs", "etc", "e.g", "i.e"}
 _DECIMAL_RE = re.compile(r"(\d)\.(\d)")
 
 
-def split_sentences(text: str) -> list[str]:
-    """Split text into sentences, protecting decimals and common abbreviations."""
+def split_sentences(text: str):
     protected = text
-    # protect decimals: 0.5 -> 0_DECIMAL_5
     protected = _DECIMAL_RE.sub(lambda m: f"{m.group(1)}__DEC__{m.group(2)}", protected)
-    # protect abbreviations: Mr. -> Mr__DOT__
     for abbr in _ABBREV:
         protected = re.sub(rf"\b{abbr}\.", f"{abbr}__DOT__", protected)
 
-    # split on sentence-ending punctuation followed by whitespace
     parts = re.split(r"(?<=[.!?])\s+", protected.strip())
 
-    # restore protected markers
     parts = [p.replace("__DOT__", ".").replace("__DEC__", ".") for p in parts]
     return [p.strip() for p in parts if p.strip()]
 
 
-# Insertion
-
-def insert_distractor(question: str, distractor: str) -> tuple[str, int]:
-    """
-    Insert the distractor sentence at a random position in the question, between
-    the first and last sentence. Returns (modified_question, insert_position).
-
-    Position semantics: 0 = before first sentence, 1 = between first and second,
-    etc. We never insert at position 0 (before everything) or after the last
-    sentence (which is usually the question itself).
-    """
+def insert_distractor(question: str, distractor: str):
     sentences = split_sentences(question)
 
     if len(sentences) <= 1:
-        # short question: insert distractor at the start
         return f"{distractor} {question}", 0
 
-    # pick a position between 1 (after first) and len-1 (before last)
     insert_pos = random.randint(1, len(sentences) - 1)
     sentences.insert(insert_pos, distractor)
     return " ".join(sentences), insert_pos
 
-
-# Training record format
 
 def to_training_example(
     question: str,
@@ -98,10 +53,9 @@ def to_training_example(
     gold_answer,
     source_idx: int,
     distractor_type: str = "clean",
-    distractor_sentence: str | None = None,
-    distractor_position: int | None = None,
-) -> dict:
-    """Build a chat-formatted training record with analysis metadata."""
+    distractor_sentence = None,
+    distractor_position = None,
+):
     if isinstance(gold_answer, (int, float)):
         gold_str = str(int(gold_answer)) if gold_answer == int(gold_answer) else str(gold_answer)
     else:
@@ -122,18 +76,14 @@ def to_training_example(
     }
 
 
-# Main build loop
-
-
-
-def _get_solution_from_distilled(rec: dict) -> str | None:
+def _get_solution_from_distilled(rec: dict):
     for msg in rec.get("messages", []):
         if msg.get("role") == "assistant":
             return msg.get("content")
     return None
 
 
-def _write_jsonl(path: str, rows: list[dict]) -> None:
+def _write_jsonl(path: str, rows: list[dict]):
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -146,10 +96,10 @@ def build_training_sets(
     noop_path: str = "train_noop.jsonl",
     in_topic_path: str = "train_in_topic.jsonl",
     off_topic_path: str = "train_off_topic.jsonl",
-) -> None:
+):
     rng = random.Random(SEED)
 
-    print(f"Loading {input_path}...")
+
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
     print(f"  {len(data)} distractor records loaded.")
@@ -164,7 +114,6 @@ def build_training_sets(
                 distilled_records.append(json.loads(line))
     print(f"  {len(distilled_records)} distilled records loaded.")
 
-    # keep only source ids that exist in both places and have a distilled solution.
     solution_by_id: dict[int, str] = {}
     valid_ids: list[int] = []
     seen_ids: set[int] = set()
@@ -200,7 +149,6 @@ def build_training_sets(
             if distractors.get(dtype):
                 available[dtype].append(source_id)
 
-    print("Available distractor coverage:")
     for dtype, ids in available.items():
         pct = 100 * len(ids) / len(valid_ids) if valid_ids else 0.0
         print(f"  {dtype:10}: {len(ids)} / {len(valid_ids)} ({pct:.1f}%)")
@@ -235,10 +183,7 @@ def build_training_sets(
         )
 
     def build_exact_binary(dtype: str) -> tuple[list[dict], dict[str, int]]:
-        """
-        Build an exact 50/50 clean vs dtype dataset without fallback.
-        Uses disjoint source ids for clean and distracted examples.
-        """
+
         distract_ids = available[dtype]
         max_k = min(len(distract_ids), len(valid_ids) // 2)
 
@@ -269,10 +214,7 @@ def build_training_sets(
         return rows, counts
 
     def build_exact_mixed() -> tuple[list[dict], dict[str, int]]:
-        """
-        Build an exact 25/25/25/25 mixed dataset without fallback.
-        Uses disjoint source ids across all four groups.
-        """
+
         max_k = min(
             len(valid_ids) // 4,
             len(available["off_topic"]),
@@ -287,7 +229,6 @@ def build_training_sets(
             "no_op": [],
         }
 
-        # allocate the scarcest categories first.
         order = ["in_topic", "no_op", "off_topic"]
 
         for k in range(max_k, 0, -1):
@@ -368,14 +309,12 @@ def build_training_sets(
             print(f"  {dtype:12}: {count} ({pct:.1f}%)")
 
 
-# Verify
-
 def verify_training_sets(
     mixed_path: str = "train_mixed.jsonl",
     noop_path: str = "train_noop.jsonl",
     in_topic_path: str = "train_in_topic.jsonl",
     off_topic_path: str = "train_off_topic.jsonl",
-) -> None:
+):
     print(f"\n{'=' * 70}")
     print("Verifying training set format...")
     print(f"{'=' * 70}")
@@ -423,9 +362,9 @@ def to_test_example(
     gold_answer,
     source_idx: int,
     distractor_type: str,
-    distractor_sentence: str | None = None,
-    distractor_position: int | None = None,
-) -> dict:
+    distractor_sentence = None,
+    distractor_position = None,
+):
     return {
         "id": source_idx,
         "question": question,
@@ -442,8 +381,7 @@ def build_test_sets(
     off_topic_path: str = "test_off_topic.jsonl",
     in_topic_path: str = "test_in_topic.jsonl",
     noop_path: str = "test_noop.jsonl",
-) -> None:
-    print(f"Loading {input_path}...")
+):
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
     print(f"  {len(data)} test distractor records loaded.")
@@ -502,15 +440,13 @@ def build_test_sets(
     _write_jsonl(in_topic_path, test_in_topic)
     _write_jsonl(noop_path, test_noop)
 
-    print(f"\n{'=' * 70}")
     print("Test sets created:")
-    print(f"{'=' * 70}")
+
     print(f"  {off_topic_path}: {len(test_off_topic)} examples")
     print(f"  {in_topic_path}:  {len(test_in_topic)} examples")
     print(f"  {noop_path}:      {len(test_noop)} examples")
 
 if __name__ == "__main__":
-    # Train sets
     build_training_sets(
         input_path="data/distractors/gsm8k_test_distractors.json",
         distilled_path="data/training/gsm8k_train_distilled.jsonl",
@@ -523,7 +459,6 @@ if __name__ == "__main__":
 
     print()
 
-    # Test sets (no clean file, use original GSM8K test directly)
     build_test_sets(
         input_path="data/distractors/gsm8k_test_distractors.json",
         off_topic_path="test_off_topic.jsonl",
